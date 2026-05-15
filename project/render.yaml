@@ -1,0 +1,23 @@
+# Render.com deployment configuration
+# https://render.com/docs/yaml-spec
+
+services:
+  - type: web
+    name: shl-assessment-recommender
+    runtime: python
+    plan: free                          # upgrade to 'starter' for always-on
+    region: oregon                      # closest to SHL evaluator
+    buildCommand: |
+      pip install -r requirements.txt &&
+      python embeddings/build_index.py
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: XAI_API_KEY
+        sync: false                     # set via Render dashboard (secret)
+      - key: PYTHON_VERSION
+        value: "3.11"
+    autoDeploy: true
+    scaling:
+      minInstances: 1
+      maxInstances: 1
