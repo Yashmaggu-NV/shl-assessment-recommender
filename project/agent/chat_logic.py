@@ -66,13 +66,27 @@ _log = get_logger(__name__)
 # LLM initialisation (lazy, singleton)
 # ---------------------------------------------------------------------------
 
-_llm_client = None
-_LLM_MODEL_NAME = "deepseek/deepseek-v4-flash:free"
-_LLM_TIMEOUT = 15  # seconds — keep total well under 30s evaluator timeout
+# ---------------------------------------------------------------------------
+# LLM — multi-model free fallback waterfall
+# ---------------------------------------------------------------------------
+
+# Priority-ordered list of free / low-cost OpenRouter models.
+# If the first model fails (404, 429, timeout, bad JSON), the system
+# automatically tries the next model without crashing or returning junk.
+_FREE_MODELS = [
+    "deepseek/deepseek-v4-flash:free",
+    "microsoft/phi-3-mini-128k-instruct:free",
+    "google/gemma-4-31b-it:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "openrouter/auto",                          # OpenRouter selects best available
+]
+
+_LLM_TIMEOUT = 15  # seconds per model attempt
+_llm_client: Optional[OpenAI] = None
 
 
-def _get_llm_client():
-    """Lazily initialise the OpenRouter client via OpenAI-compatible API."""
+def _get_llm_client() -> Optional[OpenAI]:
+    """Lazily initialise the OpenRouter client (singleton)."""
     global _llm_client
     if _llm_client is None:
         api_key = get_env("OPENROUTER_API_KEY")
@@ -84,53 +98,64 @@ def _get_llm_client():
                 api_key=api_key,
                 base_url="https://openrouter.ai/api/v1",
             )
-            _log.info("OpenRouter client initialised with model '%s'.", _LLM_MODEL_NAME)
+            _log.info("OpenRouter client initialised.")
         except Exception as e:
             _log.error("Failed to initialise OpenRouter client: %s", e)
     return _llm_client
 
 
-def _call_llm(prompt: str, timeout: int = _LLM_TIMEOUT) -> Optional[str]:
+def _call_llm(
+    prompt: str,
+    timeout: int = _LLM_TIMEOUT,
+    max_tokens: int = 1024,
+) -> Optional[str]:
     """
-    Call the OpenRouter LLM with a prompt and return the text response.
-    Returns None on failure (caller handles fallback via catalog retrieval).
+    Call OpenRouter with automatic model fallback.
 
-    Gracefully handles:
-      - 404: model not found → logs warning, returns None
-      - 429: rate limited → logs warning, returns None
-      - Any other error → logs error, returns None
+    Tries each model in _FREE_MODELS in order. Moves to the next if:
+      - 404: model not found or unavailable
+      - 429: rate limited
+      - APITimeoutError / ConnectError: network issue
+      - empty / whitespace-only response
+
+    Returns the first successful non-empty text response, or None if
+    all models fail (callers handle catalog-only fallback).
     """
     client = _get_llm_client()
     if client is None:
         return None
 
-    try:
-        start = time.time()
-        response = client.chat.completions.create(
-            model=_LLM_MODEL_NAME,
-            messages=[
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,      # Low temperature for grounded, deterministic output
-            max_tokens=1024,
-            timeout=timeout,
-        )
-        elapsed = time.time() - start
-        _log.debug("LLM call completed in %.2fs", elapsed)
+    last_err: Optional[str] = None
+    for model in _FREE_MODELS:
+        try:
+            start = time.time()
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            elapsed = time.time() - start
+            text = (response.choices[0].message.content or "").strip()
+            if text:
+                _log.debug("LLM '%s' responded in %.2fs.", model, elapsed)
+                return text
+            _log.warning("LLM '%s' returned empty response. Trying next model.", model)
+        except Exception as e:
+            err = str(e)
+            last_err = err
+            if "404" in err:
+                _log.warning("Model '%s' not found (404). Trying next.", model)
+            elif "429" in err:
+                _log.warning("Model '%s' rate limited (429). Trying next.", model)
+            elif "timeout" in err.lower() or "timed out" in err.lower():
+                _log.warning("Model '%s' timed out. Trying next.", model)
+            else:
+                _log.error("Model '%s' error: %.120s. Trying next.", model, err)
 
-        text = response.choices[0].message.content
-        if text:
-            return text.strip()
-        return None
-    except Exception as e:
-        err_str = str(e)
-        if "404" in err_str:
-            _log.warning("OpenRouter model '%s' not found (404). Falling back to catalog-only.", _LLM_MODEL_NAME)
-        elif "429" in err_str:
-            _log.warning("OpenRouter rate limited (429). Falling back to catalog-only.")
-        else:
-            _log.error("LLM call failed (OpenRouter): %s", e)
-        return None
+    _log.error("All LLM models failed. Last error: %s", last_err)
+    return None
 
 
 # ---------------------------------------------------------------------------

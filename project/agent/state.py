@@ -237,6 +237,18 @@ _TECH_SKILLS = {
     "data science", "data engineering", "microservices",
 }
 
+# Role extraction patterns — ordered by specificity (more specific first)
+_ROLE_PATTERNS = [
+    # "hiring a/an X" or "need a/an X"
+    (r"(?:hiring|recruit(?:ing)?|need(?:ing)?|looking for)\s+(?:a|an)\s+([\w\s/]+?(?:engineer|developer|programmer|architect|analyst|manager|lead|director|executive|scientist|specialist|consultant|designer|administrator|officer|devops|sre))", 1),
+    # "for a/an X role/position"
+    (r"(?:for|fill(?:ing)?)\s+(?:a|an)\s+([\w\s/]+?(?:engineer|developer|programmer|architect|analyst|manager|lead|director|executive|scientist|specialist|consultant|designer|administrator|officer|devops|sre))\s+(?:role|position|post|opening)", 1),
+    # "X role" at start of sentence
+    (r"^([\w\s/]+?(?:engineer|developer|programmer|architect|analyst|manager|lead|director|executive|scientist|specialist|consultant|designer))\s+(?:role|position|assessment|test)", 1),
+    # Direct job titles
+    (r"\b(software engineer|java developer|python developer|data scientist|data engineer|devops engineer|cloud engineer|frontend developer|backend developer|fullstack developer|ml engineer|ai engineer|platform engineer|site reliability engineer|solutions architect|product manager|engineering manager|tech lead|cto|vp of engineering)\b", 0),
+]
+
 
 def reconstruct_state_from_history(
     messages: List[Dict[str, str]],
@@ -295,8 +307,16 @@ def reconstruct_state_from_history(
     if not state.technical_skills:
         state.technical_skills = _extract_tech_skills(full_user_text)
 
+    # Role — regex fallback if LLM didn't populate it.
+    # Scans ALL user messages so role context is never lost across turns.
+    if not state.role:
+        state.role = _extract_role(full_user_text)
+
     # Category exclusions from user messages
     _apply_category_edits(state, messages)
+
+    # Category inclusions: scan user messages for explicit preference signals
+    _apply_preference_signals(state, messages)
 
     # Conversation completion check (look for confirmation signals in last assistant message)
     if not state.conversation_complete:
@@ -399,6 +419,55 @@ def _extract_tech_skills(text: str) -> List[str]:
         if re.search(pattern, text_lower):
             found.append(skill)
     return found
+
+
+def _extract_role(text: str) -> Optional[str]:
+    """
+    Extract job role from free-form user text using regex patterns.
+
+    Tries each pattern in _ROLE_PATTERNS in order, returning the first match.
+    Cleans up common stopwords from the captured group.
+    """
+    for pattern, group_idx in _ROLE_PATTERNS:
+        match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if match:
+            role = match.group(group_idx).strip()
+            # Clean trailing stopwords
+            role = re.sub(
+                r"\s+(role|position|post|opening|test|assessment|please|too|also)$",
+                "", role, flags=re.IGNORECASE
+            ).strip()
+            if role and len(role) > 2:
+                return role.lower()
+    return None
+
+
+def _apply_preference_signals(
+    state: ConversationState,
+    messages: List[Dict[str, str]],
+) -> None:
+    """
+    Scan full message history for preference keywords and set state flags.
+
+    This ensures that preferences expressed in any turn (not just the current
+    turn) are preserved. For example, if the user said "add personality" in
+    turn 3, and turn 5 is asking for refinement, state.needs_personality
+    will still be True when turn 5 is processed.
+    """
+    full_user_text = " ".join(
+        m["content"] for m in messages if m["role"] == "user"
+    ).lower()
+
+    if "personality" in full_user_text and state.needs_personality is None:
+        state.needs_personality = True
+    if ("teamwork" in full_user_text or "team work" in full_user_text) and state.needs_personality is None:
+        state.needs_personality = True  # teamwork is measured via OPQ personality
+    if ("cognitive" in full_user_text or "reasoning" in full_user_text) and state.needs_cognitive is None:
+        state.needs_cognitive = True
+    if "leadership" in full_user_text and state.needs_leadership is None:
+        state.needs_leadership = True
+    if ("communication" in full_user_text or "interpersonal" in full_user_text) and state.needs_personality is None:
+        state.needs_personality = True  # Communication skills often overlap with personality
 
 
 def _apply_category_edits(state: ConversationState, messages: List[Dict[str, str]]) -> None:
