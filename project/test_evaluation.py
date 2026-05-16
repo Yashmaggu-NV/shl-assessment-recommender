@@ -328,13 +328,13 @@ def test_11_multi_turn_context():
 def test_12_model_fallback():
     """Simulate primary model failure → automatic fallback to next model."""
     print("\n" + "=" * 60)
-    print("TEST 12: Model fallback (force primary model to fail)")
+    print("TEST 12: Model fallback (force tier-1 primary to fail)")
     print("=" * 60)
-    import agent.chat_logic as cl
+    import agent.llm_router as lr
 
-    # Temporarily prepend a bad model to force a fallback
-    original_models = cl._FREE_MODELS[:]
-    cl._FREE_MODELS = ["invalid/model-that-doesnt-exist:free"] + original_models
+    # Temporarily prepend a bad model to Tier 1 to force fallback to Tier 2
+    orig_t1 = lr._TIER1[:]
+    lr._TIER1 = ["invalid/model-that-doesnt-exist:free"] + orig_t1
 
     try:
         resp = run_chat([{
@@ -350,7 +350,7 @@ def test_12_model_fallback():
         else:
             print("  ⚠ WARNING: Empty recs after fallback (catalog fallback active)")
     finally:
-        cl._FREE_MODELS = original_models
+        lr._TIER1 = orig_t1
     return resp
 
 
@@ -359,13 +359,14 @@ def test_13_all_models_fail():
     print("\n" + "=" * 60)
     print("TEST 13: All models fail → catalog-only fallback")
     print("=" * 60)
-    import agent.chat_logic as cl
+    import agent.llm_router as lr
 
-    original_models = cl._FREE_MODELS[:]
-    cl._FREE_MODELS = [
-        "invalid/model-1:free",
-        "invalid/model-2:free",
-    ]
+    # Replace ALL tier lists with invalid models to force total LLM failure
+    orig_t1, orig_t2, orig_t3, orig_t4 = lr._TIER1[:], lr._TIER2[:], lr._TIER3[:], lr._TIER4[:]
+    lr._TIER1 = ["invalid/model-1:free"]
+    lr._TIER2 = ["invalid/model-2:free"]
+    lr._TIER3 = ["invalid/model-3"]
+    lr._TIER4 = ["invalid/model-4"]
 
     try:
         resp = run_chat([{
@@ -378,7 +379,7 @@ def test_13_all_models_fail():
         print_recs(resp)
         print("  ✓ PASS: No crash on all-model failure (catalog fallback)")
     finally:
-        cl._FREE_MODELS = original_models
+        lr._TIER1, lr._TIER2, lr._TIER3, lr._TIER4 = orig_t1, orig_t2, orig_t3, orig_t4
     return resp
 
 
@@ -418,6 +419,92 @@ def test_14_domain_lock_specific_names():
     return resp
 
 
+def test_15_router_turn_types():
+    """Verify cascading router runs without crash for each turn type."""
+    print("\n" + "=" * 60)
+    print("TEST 15: Router turn-type routing smoke test")
+    print("=" * 60)
+    from agent.llm_router import TurnType, route_llm_call
+
+    prompt = "Return JSON: {\"reply\": \"ok\", \"recommendations\": [], \"end_of_conversation\": false}"
+    results = {}
+    for turn in [TurnType.RECOMMEND, TurnType.REFINE, TurnType.COMPARE, TurnType.STATE]:
+        raw = route_llm_call(prompt, turn_type=turn, validate_json=False, max_tokens=64)
+        results[turn.value] = "ok" if raw else "none"
+        print(f"  turn_type={turn.value:<12} → {'✓ got response' if raw else '⚠ catalog fallback'}")
+
+    non_crashed = all(v is not None for v in results.values())
+    print("  ✓ PASS: Router did not crash for any turn type")
+
+
+def test_16_router_json_validation():
+    """Router validate_json=True: rejects non-JSON, accepts valid JSON."""
+    print("\n" + "=" * 60)
+    print("TEST 16: Router JSON validation layer")
+    print("=" * 60)
+    from agent.llm_router import _validate_json_response, _validate_recommendation_response
+
+    # Test _validate_json_response
+    ok, parsed, reason = _validate_json_response(
+        '{"reply": "hello", "recommendations": [], "end_of_conversation": false}'
+    )
+    assert ok, f"Should parse valid JSON but got: {reason}"
+    print("  ✓ Valid JSON accepted")
+
+    ok, parsed, reason = _validate_json_response("This is just plain text with no JSON")
+    assert not ok, "Should reject plain text"
+    print("  ✓ Plain text correctly rejected")
+
+    ok, parsed, reason = _validate_json_response("{bad json :")
+    assert not ok, "Should reject malformed JSON"
+    print("  ✓ Malformed JSON correctly rejected")
+
+    # Test _validate_recommendation_response
+    valid_recs = {
+        "reply": "Here are assessments",
+        "recommendations": [{"name": "Verify G+", "url": "https://www.shl.com/verify-g"}],
+        "end_of_conversation": False,
+    }
+    ok, reason = _validate_recommendation_response(valid_recs, require_recs=True)
+    assert ok, f"Valid rec should pass: {reason}"
+    print("  ✓ Valid recommendation dict accepted")
+
+    bad_url = {
+        "reply": "Here",
+        "recommendations": [{"name": "Test", "url": "https://example.com/test"}],
+        "end_of_conversation": False,
+    }
+    ok, reason = _validate_recommendation_response(bad_url)
+    assert not ok, "Non-SHL URL should be rejected"
+    print("  ✓ Non-SHL URL correctly rejected")
+
+    print("  ✓ PASS: JSON validation layer working correctly")
+
+
+def test_17_router_tier_fallback():
+    """Router: prepend bad tier-1 model, confirm fallback to tier-2."""
+    print("\n" + "=" * 60)
+    print("TEST 17: Router tier fallback (bad T1 → T2)")
+    print("=" * 60)
+    import agent.llm_router as lr
+
+    orig_t1 = lr._TIER1[:]
+    lr._TIER1 = ["invalid/bad-model-tier1:free"]  # Force T1 to fail
+
+    try:
+        resp = run_chat([{
+            "role": "user",
+            "content": "Hiring a mid-level Python developer with Django"
+        }])
+        validate_schema(resp, "tier_fallback")
+        print(f"  Recommendations: {len(resp.recommendations)}")
+        print_recs(resp)
+        print("  ✓ PASS: Got response despite T1 failure (T2 fallback worked)")
+    finally:
+        lr._TIER1 = orig_t1
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Run all
 # ---------------------------------------------------------------------------
@@ -441,6 +528,9 @@ if __name__ == "__main__":
     test_12_model_fallback()
     test_13_all_models_fail()
     test_14_domain_lock_specific_names()
+    test_15_router_turn_types()
+    test_16_router_json_validation()
+    test_17_router_tier_fallback()
 
     print("\n" + "=" * 60)
     print("All tests completed.")

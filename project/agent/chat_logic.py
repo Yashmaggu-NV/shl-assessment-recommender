@@ -19,7 +19,6 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from openai import OpenAI
 
 from agent.comparison import (
     build_comparison_context,
@@ -63,99 +62,23 @@ from utils.helpers import (
 _log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# LLM initialisation (lazy, singleton)
+# LLM router — cascading multi-model fallback (see agent/llm_router.py)
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# LLM — multi-model free fallback waterfall
-# ---------------------------------------------------------------------------
+from agent.llm_router import (
+    TurnType,
+    call_llm_fast,
+    call_llm_recommend,
+    call_llm_refine,
+    call_llm_compare,
+    route_llm_call,
+)
 
-# Priority-ordered list of free / low-cost OpenRouter models.
-# If the first model fails (404, 429, timeout, bad JSON), the system
-# automatically tries the next model without crashing or returning junk.
-_FREE_MODELS = [
-    "deepseek/deepseek-v4-flash:free",
-    "microsoft/phi-3-mini-128k-instruct:free",
-    "google/gemma-4-31b-it:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "openrouter/auto",                          # OpenRouter selects best available
-]
-
-_LLM_TIMEOUT = 15  # seconds per model attempt
-_llm_client: Optional[OpenAI] = None
-
-
-def _get_llm_client() -> Optional[OpenAI]:
-    """Lazily initialise the OpenRouter client (singleton)."""
-    global _llm_client
-    if _llm_client is None:
-        api_key = get_env("OPENROUTER_API_KEY")
-        if not api_key:
-            _log.warning("OPENROUTER_API_KEY not set — LLM calls will be skipped.")
-            return None
-        try:
-            _llm_client = OpenAI(
-                api_key=api_key,
-                base_url="https://openrouter.ai/api/v1",
-            )
-            _log.info("OpenRouter client initialised.")
-        except Exception as e:
-            _log.error("Failed to initialise OpenRouter client: %s", e)
-    return _llm_client
-
-
-def _call_llm(
-    prompt: str,
-    timeout: int = _LLM_TIMEOUT,
-    max_tokens: int = 1024,
-) -> Optional[str]:
-    """
-    Call OpenRouter with automatic model fallback.
-
-    Tries each model in _FREE_MODELS in order. Moves to the next if:
-      - 404: model not found or unavailable
-      - 429: rate limited
-      - APITimeoutError / ConnectError: network issue
-      - empty / whitespace-only response
-
-    Returns the first successful non-empty text response, or None if
-    all models fail (callers handle catalog-only fallback).
-    """
-    client = _get_llm_client()
-    if client is None:
-        return None
-
-    last_err: Optional[str] = None
-    for model in _FREE_MODELS:
-        try:
-            start = time.time()
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2,
-                max_tokens=max_tokens,
-                timeout=timeout,
-            )
-            elapsed = time.time() - start
-            text = (response.choices[0].message.content or "").strip()
-            if text:
-                _log.debug("LLM '%s' responded in %.2fs.", model, elapsed)
-                return text
-            _log.warning("LLM '%s' returned empty response. Trying next model.", model)
-        except Exception as e:
-            err = str(e)
-            last_err = err
-            if "404" in err:
-                _log.warning("Model '%s' not found (404). Trying next.", model)
-            elif "429" in err:
-                _log.warning("Model '%s' rate limited (429). Trying next.", model)
-            elif "timeout" in err.lower() or "timed out" in err.lower():
-                _log.warning("Model '%s' timed out. Trying next.", model)
-            else:
-                _log.error("Model '%s' error: %.120s. Trying next.", model, err)
-
-    _log.error("All LLM models failed. Last error: %s", last_err)
-    return None
+# Backward-compat alias: legacy call sites that just call _call_llm(prompt)
+# are routed through the standard recommend path.
+def _call_llm(prompt: str, timeout: int = 15, max_tokens: int = 1024) -> Optional[str]:
+    """Backward-compat alias — delegates to the cascading router."""
+    return call_llm_recommend(prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -191,11 +114,10 @@ def _infer_role_from_context(user_message: str) -> Optional[Dict[str, Any]]:
     Returns parsed JSON dict or None on failure.
     """
     prompt = _ROLE_INFERENCE_PROMPT.format(user_message=user_message)
-    raw = _call_llm(prompt, timeout=6)
+    raw = call_llm_fast(prompt, timeout=6, max_tokens=256)
     if not raw:
         return None
 
-    # Strip markdown code fences if present
     raw = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
 
     try:
@@ -203,7 +125,6 @@ def _infer_role_from_context(user_message: str) -> Optional[Dict[str, Any]]:
         if isinstance(parsed, dict):
             return parsed
     except json.JSONDecodeError:
-        # Try to extract JSON from mixed content
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
             try:
@@ -229,7 +150,7 @@ def _extract_state_via_llm(
     history_str = _format_history_for_prompt(messages)
     prompt = STATE_EXTRACTION_PROMPT.format(conversation_history=history_str)
 
-    raw = _call_llm(prompt, timeout=6)
+    raw = call_llm_fast(prompt, timeout=8, max_tokens=512)
     if not raw:
         return None
 
@@ -670,7 +591,7 @@ def _handle_refine(
         conversation_history=history_str,
     )
 
-    raw = _call_llm(prompt)
+    raw = call_llm_refine(prompt)
     parsed = _parse_llm_response(raw)
 
     if parsed and parsed.get("recommendations"):
@@ -737,7 +658,7 @@ def _handle_compare(
 
     # Try LLM comparison
     prompt = COMPARISON_PROMPT.format(assessment_a=ctx_a, assessment_b=ctx_b)
-    raw = _call_llm(prompt)
+    raw = call_llm_compare(prompt)
 
     if raw and len(raw.strip()) > 50:
         reply = raw.strip()
