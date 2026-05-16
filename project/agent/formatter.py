@@ -138,6 +138,28 @@ def build_chat_response(
     # Recommend / refine / close
     if items:
         recs = format_recommendations(items, max_items=10)
+        actual_count = len(recs)
+
+        # Fix reply text to match the actual recommendation count.
+        # The reply may say "Here are 9 assessments" but the last-mile filter
+        # may have removed some, leaving only e.g. 2. Fix the count.
+        if actual_count > 0:
+            import re as _re
+            # Match patterns like "Here are 5 assessments" or "Here is 1 assessment"
+            reply = _re.sub(
+                r"\b(here (?:are|is)) (\d+) (assessment)",
+                lambda m: f"{'Here is' if actual_count == 1 else 'Here are'} {actual_count} {'assessment' if actual_count == 1 else 'assessments'}",
+                reply,
+                flags=_re.IGNORECASE,
+            )
+            # Also fix "X assessment(s)" standalone count patterns
+            reply = _re.sub(
+                r"\b(\d+) (assessment)s?\b",
+                lambda m: f"{actual_count} {'assessment' if actual_count == 1 else 'assessments'}",
+                reply,
+                flags=_re.IGNORECASE,
+            )
+
         return ChatResponse(
             reply=reply,
             recommendations=recs,
