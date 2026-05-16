@@ -72,24 +72,61 @@ def extract_comparison_names(message: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Catalog lookup helpers
-# ---------------------------------------------------------------------------
+# Common abbreviations used in SHL assessment conversations
+_ABBREVIATION_MAP = {
+    "opq": "Occupational Personality Questionnaire OPQ32r",
+    "opq32": "Occupational Personality Questionnaire OPQ32r",
+    "opq32r": "Occupational Personality Questionnaire OPQ32r",
+    "gsa": "Global Skills Assessment",
+    "dsi": "Dependability and Safety Instrument (DSI)",
+    "sjt": "Graduate Scenarios",
+    "verify": "SHL Verify Interactive G+",
+    "verify g+": "SHL Verify Interactive G+",
+    "verify g": "SHL Verify Interactive G",
+    "g+": "SHL Verify Interactive G+",
+}
+
+# Report products that should never be returned as comparison targets
+_REPORT_FILTER_RE = re.compile(
+    r"\breport\b|\bguide\b|\bprofiling\b|\bplanner\b"
+    r"|\bexercises?\b|\bparticipant\b"
+    r"|\bdevelopment cent(?:er|re)\b|\bassessment cent(?:er|re)\b"
+    r"|\bremoteworkq\b|\bdigital readiness\b|\bhipo\b"
+    r"|\b360\b|\bscenarios\b|\bglobal skills development\b",
+    re.IGNORECASE,
+)
+
 
 def _find_assessment(query: str) -> Optional[Dict[str, Any]]:
     """
-    Find a catalog assessment by name using exact-then-fuzzy matching.
-    Falls back to keyword search if direct name matching fails.
+    Find a catalog assessment by name using:
+      1. Abbreviation mapping (OPQ → OPQ32r, GSA → Global Skills Assessment)
+      2. Exact/fuzzy name lookup
+      3. Keyword search fallback (filtered to exclude reports)
     """
+    # Check abbreviation map first
+    query_lower = query.strip().lower()
+    if query_lower in _ABBREVIATION_MAP:
+        canonical = _ABBREVIATION_MAP[query_lower]
+        item = get_item_by_name(canonical)
+        if item:
+            return item
+
     # Direct name lookup
     item = get_item_by_name(query)
     if item:
-        return item
+        # Don't return report products as comparison targets
+        if _REPORT_FILTER_RE.search(item.get("name", "")):
+            _log.debug("Filtered report product '%s' from comparison lookup", item["name"])
+        else:
+            return item
 
-    # Keyword search fallback
-    results = keyword_search(query, top_k=3)
-    if results:
-        return results[0][0]
+    # Keyword search fallback — filter out reports
+    results = keyword_search(query, top_k=5)
+    for result_item, _ in results:
+        name = result_item.get("name", "")
+        if not _REPORT_FILTER_RE.search(name):
+            return result_item
 
     return None
 

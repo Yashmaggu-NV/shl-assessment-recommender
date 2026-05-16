@@ -348,7 +348,14 @@ def _needs_clarification(
         user_message,
         re.IGNORECASE,
     )
+
     if rich_context:
+        # We found context signals, but if the message is short (≤8 words)
+        # and we only have a bare role with NO seniority/extra signals,
+        # still ask for clarification. E.g., "Hiring a software engineer"
+        # has 'engineer' but no seniority — should clarify.
+        if has_role and not has_extra and len(user_message.split()) <= 8:
+            return True  # Ask for seniority/level
         return False
 
     return True
@@ -563,11 +570,41 @@ def _handle_refine(
             )
 
     # Get candidates including the prev items + new retrieval
+    # IMPORTANT: build the query from the ROLE CONTEXT (state), not the
+    # refinement message ("add personality tests"). Using the refinement
+    # text as the search query causes drift into unrelated domains.
     from agent.recommendation_engine import build_retrieval_query
-    query = build_retrieval_query(state, user_message)
+
+    # Apply refinement intent to state BEFORE retrieval
+    intent = detect_refinement_intent(user_message)
+    if intent:
+        action, target, replacement = intent
+        target_lower = target.lower()
+        if action == "add":
+            # Interpret category-level additions
+            if "personality" in target_lower or "personality" in user_message.lower():
+                state.needs_personality = True
+            if "teamwork" in target_lower or "team" in target_lower or "teamwork" in user_message.lower():
+                state.needs_personality = True  # teamwork measured via personality tests
+            if "cognitive" in target_lower or "reasoning" in target_lower:
+                state.needs_cognitive = True
+            if "sjt" in target_lower or "situational" in target_lower:
+                state.needs_sjt = True
+            if target not in state.included_names:
+                state.included_names.append(target)
+        elif action == "remove":
+            if target not in state.excluded_names:
+                state.excluded_names.append(target)
+
+    # Build retrieval query from the original role context, NOT the refinement text
+    role_query = build_retrieval_query(state, "")  # Use state only
     new_candidates = hybrid_retrieve(
-        query=query,
+        query=role_query,
+        state_context=state.to_context_string(),
         technical_skills=state.technical_skills or None,
+        languages=state.languages or None,
+        exclude_categories=state.excluded_categories or None,
+        exclude_names=state.excluded_names or None,
         purpose=state.purpose,
         top_k=30,
     )
@@ -591,7 +628,6 @@ def _handle_refine(
             return build_chat_response(reply=reply, items=items, end_of_conversation=eoc)
 
     # Fallback: detect refinement intent and apply mechanically
-    intent = detect_refinement_intent(user_message)
     if intent:
         action, target, replacement = intent
         from agent.recommendation_engine import apply_refinement
@@ -605,9 +641,9 @@ def _handle_refine(
         reply = f"{msg} Updated shortlist:"
         return build_chat_response(reply=reply, items=updated_items, end_of_conversation=False)
 
-    # No refinement detected — re-recommend
+    # No refinement detected — re-recommend using role context
     items = assemble_recommendations(
-        user_message=user_message,
+        user_message=role_query,  # Use role-based query, not refinement text
         state=state,
         previous_recommendations=previous_recs,
         max_results=10,
