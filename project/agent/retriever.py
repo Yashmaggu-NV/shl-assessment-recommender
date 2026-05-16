@@ -109,7 +109,13 @@ _GENERIC_NAME_PATTERNS = re.compile(
     r"|\bdev tips\b|\bperformance potential\b|\benterprise leadership\b"
     r"|\btalent audit\b|\bstandard report\b|\bcompetency report\b"
     r"|\buniversal competency\b|\bleadership report\b"
-    r"|\bglobal skills development\b|\bscenarios\b",
+    r"|\bglobal skills development\b|\bscenarios\b"
+    r"|\bparticipant report\b|\bmanager report\b|\bdevelopment report\b"
+    r"|\bprofiling guide\b|\bjob profiling\b|\baction planner\b"
+    r"|\bgeneric catalog\b|\bcatalog document\b"
+    r"|\bremoteworkq\b|\bdigital readiness\b|\bhipo assessment\b"
+    r"|\bworkplace safety\b.*\breport\b"
+    r"|\bplanner report\b|\bguide\b",
     re.IGNORECASE,
 )
 

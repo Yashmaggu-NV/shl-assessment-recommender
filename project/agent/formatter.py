@@ -44,7 +44,8 @@ def format_recommendations(
 ) -> List[Recommendation]:
     """
     Convert a list of catalog items to Recommendation objects.
-    Enforces the 1–10 item cap and filters items with missing URLs.
+    Enforces the 1–10 item cap, filters items with missing URLs,
+    and applies a final safety filter to strip report/guide products.
 
     Args:
         items: Catalog item dicts
@@ -53,14 +54,35 @@ def format_recommendations(
     Returns:
         List of Recommendation objects (0–10 items).
     """
+    import re
+
+    # Last-mile filter: strip report/guide/document products that survived
+    # the retriever and ranker filters. This is the final safety net.
+    _REPORT_FILTER = re.compile(
+        r"\breport\b|\bguide\b|\bprofiling\b|\bplanner\b"
+        r"|\bremoteworkq\b|\bdigital readiness\b|\bhipo\b"
+        r"|\b360\b|\bdev tips\b|\bscenarios\b"
+        r"|\bglobal skills development\b|\bvirtual assessment\b",
+        re.IGNORECASE,
+    )
+
     recommendations = []
-    for item in items[:max_items]:
+    for item in items[:max_items + 5]:  # over-fetch to compensate for filtered items
+        if len(recommendations) >= max_items:
+            break
+
         url = item.get("link", "")
         if not url:
             _log.warning(
                 "Skipping item '%s' — no catalog URL.", item.get("name", "?")
             )
             continue
+
+        name = item.get("name", "")
+        if _REPORT_FILTER.search(name):
+            _log.info("Last-mile filter removed report product: '%s'", name)
+            continue
+
         recommendations.append(format_recommendation(item))
 
     return recommendations

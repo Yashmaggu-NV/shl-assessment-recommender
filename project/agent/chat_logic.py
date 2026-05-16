@@ -740,7 +740,16 @@ def _resolve_llm_recommendations(
     """
     Resolve LLM-returned recommendation names/URLs to actual catalog items.
     Ensures no hallucinated items slip through.
+    Also filters out generic report/guide products the LLM may have selected.
     """
+    # Report filter for LLM-resolved items
+    _REPORT_RE = re.compile(
+        r"\breport\b|\bguide\b|\bprofiling\b|\bplanner\b"
+        r"|\bremoteworkq\b|\bdigital readiness\b|\bhipo\b"
+        r"|\b360\b|\bscenarios\b|\bglobal skills development\b",
+        re.IGNORECASE,
+    )
+
     catalog = load_catalog()
     catalog_by_name = {normalize_text(item["name"]): item for item in catalog}
     catalog_by_url = {item.get("link", "").lower(): item for item in catalog}
@@ -753,6 +762,10 @@ def _resolve_llm_recommendations(
         # Try exact name match first
         item = catalog_by_name.get(normalize_text(name))
         if item:
+            # Filter out report products
+            if _REPORT_RE.search(item.get("name", "")):
+                _log.info("LLM recommended report product '%s' — filtering out.", item["name"])
+                continue
             resolved.append(item)
             continue
 
@@ -760,12 +773,18 @@ def _resolve_llm_recommendations(
         if url:
             item = catalog_by_url.get(url.lower().rstrip("/"))
             if item:
+                if _REPORT_RE.search(item.get("name", "")):
+                    _log.info("LLM recommended report product '%s' — filtering out.", item["name"])
+                    continue
                 resolved.append(item)
                 continue
 
         # Try fuzzy name match
         item = get_item_by_name(name)
         if item:
+            if _REPORT_RE.search(item.get("name", "")):
+                _log.info("LLM recommended report product '%s' — filtering out.", item["name"])
+                continue
             resolved.append(item)
             continue
 
