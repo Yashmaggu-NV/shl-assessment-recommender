@@ -67,7 +67,7 @@ _log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _llm_client = None
-_LLM_MODEL_NAME = "google/gemma-4-31b-it:free"
+_LLM_MODEL_NAME = "meta-llama/llama-3-8b-instruct:free"
 _LLM_TIMEOUT = 25  # seconds — stay inside 30s evaluator timeout
 
 
