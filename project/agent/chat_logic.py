@@ -67,7 +67,7 @@ _log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _llm_client = None
-_LLM_MODEL_NAME = "meta-llama/llama-3-8b-instruct:free"
+_LLM_MODEL_NAME = "deepseek/deepseek-v4-flash:free"
 _LLM_TIMEOUT = 25  # seconds — stay inside 30s evaluator timeout
 
 
@@ -93,7 +93,12 @@ def _get_llm_client():
 def _call_llm(prompt: str, timeout: int = _LLM_TIMEOUT) -> Optional[str]:
     """
     Call the OpenRouter LLM with a prompt and return the text response.
-    Returns None on failure (caller handles fallback).
+    Returns None on failure (caller handles fallback via catalog retrieval).
+
+    Gracefully handles:
+      - 404: model not found → logs warning, returns None
+      - 429: rate limited → logs warning, returns None
+      - Any other error → logs error, returns None
     """
     client = _get_llm_client()
     if client is None:
@@ -118,7 +123,13 @@ def _call_llm(prompt: str, timeout: int = _LLM_TIMEOUT) -> Optional[str]:
             return text.strip()
         return None
     except Exception as e:
-        _log.error("LLM call failed (OpenRouter): %s", e)
+        err_str = str(e)
+        if "404" in err_str:
+            _log.warning("OpenRouter model '%s' not found (404). Falling back to catalog-only.", _LLM_MODEL_NAME)
+        elif "429" in err_str:
+            _log.warning("OpenRouter rate limited (429). Falling back to catalog-only.")
+        else:
+            _log.error("LLM call failed (OpenRouter): %s", e)
         return None
 
 
