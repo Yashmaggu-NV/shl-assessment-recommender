@@ -87,8 +87,8 @@ _TURN_TIER_MAP: Dict[TurnType, List[List[str]]] = {
     TurnType.VAGUE:      [_TIER1],
     TurnType.CLARIFY:    [_TIER1],
     TurnType.RECOMMEND:  [_TIER1, _TIER2],
-    TurnType.REFINE:     [_TIER2, _TIER1, _TIER3],
-    TurnType.COMPARE:    [_TIER1, _TIER2, _TIER3],
+    TurnType.REFINE:     [_TIER1, _TIER2],   # Tier1 first (faster), then Tier2
+    TurnType.COMPARE:    [_TIER1, _TIER2],
     TurnType.STATE:      [_TIER1],
     TurnType.INFER_ROLE: [_TIER1],
 }
@@ -102,15 +102,15 @@ _DEFAULT_TIERS = [_TIER1, _TIER2]
 # it is not fast enough for the 30-second evaluator budget.
 # ---------------------------------------------------------------------------
 _TIMEOUT_BY_TIER = {
-    0: 5,    # Tier 1 — fast free models must reply quickly
-    1: 7,    # Tier 2 — reasoning models
-    2: 10,   # Tier 3 — paid stable models
-    3: 12,   # Tier 4 — last resort
+    0: 4,    # Tier 1 — fast free models must reply quickly
+    1: 6,    # Tier 2 — reasoning models
+    2: 8,    # Tier 3 — paid stable models
+    3: 10,   # Tier 4 — last resort
 }
 
 # Global budget: if total elapsed across all model attempts exceeds this,
 # stop cascading and return None (catalog-only fallback).
-_GLOBAL_BUDGET_S = 20.0
+_GLOBAL_BUDGET_S = 15.0
 
 # ---------------------------------------------------------------------------
 # Client singleton
@@ -369,20 +369,41 @@ def route_llm_call(
 
 def call_llm_fast(
     prompt: str,
-    timeout: int = 12,
-    max_tokens: int = 512,
+    timeout: int = 4,
+    max_tokens: int = 256,
 ) -> Optional[str]:
     """
-    Fast path: use Tier 1 models only.
-    For state extraction, role inference, clarification questions.
-    Equivalent to old _call_llm with small timeout.
+    Fast path: Tier 1 models only, tight 4-second wall-clock deadline.
+    Used for state extraction, role inference, clarification questions.
     """
-    return route_llm_call(
-        prompt,
-        turn_type=TurnType.CLARIFY,
-        validate_json=False,
-        max_tokens=max_tokens,
-    )
+    # Override tier timeout for this call only
+    import concurrent.futures as _cf
+    client = _get_client()
+    if client is None:
+        return None
+    for model in _TIER1[:2]:  # Only try first 2 models for speed
+        try:
+            future = client.chat.completions.create
+            with _cf.ThreadPoolExecutor(max_workers=1) as ex:
+                f = ex.submit(
+                    client.chat.completions.create,
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                )
+                try:
+                    resp = f.result(timeout=timeout)
+                    raw = (resp.choices[0].message.content or "").strip()
+                    if raw:
+                        _log.info("[FastLLM] '%s' success", model)
+                        return raw
+                except _cf.TimeoutError:
+                    _log.warning("[FastLLM] '%s' timed out after %ds", model, timeout)
+        except Exception as exc:
+            _log.warning("[FastLLM] '%s' error: %.60s", model, exc)
+    return None
 
 
 def call_llm_recommend(prompt: str) -> Optional[str]:

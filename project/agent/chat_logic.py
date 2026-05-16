@@ -82,6 +82,40 @@ def _call_llm(prompt: str, timeout: int = 15, max_tokens: int = 1024) -> Optiona
 
 
 # ---------------------------------------------------------------------------
+# Keyword-based refinement detector (backup for when regex fails)
+# ---------------------------------------------------------------------------
+
+_REFINE_SIGNAL_WORDS = frozenset({
+    # Action words
+    "add", "also", "include", "plus", "refine", "narrow", "filter",
+    "remove", "drop", "exclude", "replace", "swap", "without",
+    # Category words that always signal a refinement in mid-conversation
+    "leadership", "collaboration", "teamwork", "personality", "cognitive",
+    "communication", "situational", "sjt", "behavioural", "behavioral",
+})
+
+
+def _is_refinement_turn(user_message: str, has_assistant_history: bool) -> bool:
+    """
+    Return True if this turn is a refinement of a prior conversation.
+
+    Uses two independent signals so one can back up the other:
+    1. detect_refinement_intent() — regex-based, high precision
+    2. keyword intersection — catches cases the regex misses
+    """
+    if not has_assistant_history:
+        return False
+    # Signal 1: regex-based
+    if detect_refinement_intent(user_message) is not None:
+        return True
+    # Signal 2: keyword-based fallback
+    words = set(user_message.lower().split())
+    if words & _REFINE_SIGNAL_WORDS:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # LLM role inference (fallback for descriptive queries)
 # ---------------------------------------------------------------------------
 
@@ -526,21 +560,32 @@ def _handle_refine(
             if target not in state.excluded_names:
                 state.excluded_names.append(target)
 
-    # --- 3. Build retrieval query from ROLE CONTEXT, not refinement text --
+    # --- 3. Ensure state.role is always populated ----------------------------
+    # Inline fallback: if regex state reconstruction missed the role, scan
+    # each user message directly (handles cold-start or LLM failure cases).
     from agent.recommendation_engine import build_retrieval_query
+    from agent.state import _extract_role as _state_extract_role
+    if not state.role:
+        for _m in messages:
+            if _m["role"] == "user":
+                _r = _state_extract_role(_m["content"])
+                if _r:
+                    state.role = _r
+                    _log.info("Inline role fallback extracted: '%s'", state.role)
+                    break
+
     # Use user_message as supplemental context (it may mention "personality",
     # "teamwork" etc.) but state anchors the domain (role, technical_skills).
     role_query = build_retrieval_query(state, user_message)
 
     # If we have no previous items to refine, generate a fresh shortlist
     # from state context (which now includes the refinement additions).
-    # This path is correct when the assistant's prior turn was a clarification
-    # question (not a recommendation), so prev_items is empty.
+    # This path is PURE CATALOG — no LLM call — so it's always fast (<1s).
     if not prev_items:
         _log.info(
-            "No previous shortlist found. Generating fresh shortlist from state context "
-            "(role=%s, skills=%s).",
-            state.role, state.technical_skills,
+            "No previous shortlist. Pure-catalog refinement "
+            "(role=%s, needs_leadership=%s, needs_personality=%s).",
+            state.role, state.needs_leadership, state.needs_personality,
         )
         items = assemble_recommendations(
             user_message=role_query,
@@ -552,11 +597,11 @@ def _handle_refine(
             items = _filter_domain_irrelevant(items, state)
             reply = _build_recommendation_reply(state, items)
             return build_chat_response(reply=reply, items=items, end_of_conversation=False)
-        elif state.role:
-            # Role is known but no catalog matches — use a broader query
-            broader = state.role
+
+        # Role known but no catalog matches — try with bare role string
+        if state.role:
             items = assemble_recommendations(
-                user_message=broader,
+                user_message=state.role,
                 state=state,
                 previous_recommendations=None,
                 max_results=10,
@@ -565,9 +610,10 @@ def _handle_refine(
             if items:
                 reply = _build_recommendation_reply(state, items)
                 return build_chat_response(reply=reply, items=items, end_of_conversation=False)
-        # Only ask for restatement when we have zero context at all
+
+        # No context at all — ask clarification
         return build_chat_response(
-            reply="I'd be happy to help. Could you share the role you're hiring for and any key requirements?",
+            reply="Happy to help. Could you share the role and any key requirements?",
             is_clarification=True,
         )
 
@@ -1002,8 +1048,7 @@ def process_chat(request: ChatRequest) -> ChatResponse:
 
     # -----------------------------------------------------------------------
     # FAST-PATH DECISION TREE
-    # Avoid LLM state extraction if the turn can be handled deterministically.
-    # ORDER MATTERS: refinement must be checked before clarification.
+    # ORDER MATTERS: refinement > clarification > slow-path LLM extraction
     # -----------------------------------------------------------------------
 
     # 1. Refusal check
@@ -1017,18 +1062,21 @@ def process_chat(request: ChatRequest) -> ChatResponse:
         _log.info("Fast path: Comparison")
         return _handle_compare(user_message, state, messages, previous_recs)
 
-    # 3. Refinement check — MUST come before clarification gating.
-    #    If the user has mid-conversation history and says "add X" or "remove Y",
-    #    route directly to refine. Regex-only state is sufficient — it already
-    #    scans ALL messages (user + assistant) for role/skills.
-    #    NEVER call _extract_state_via_llm here — that was causing 70s+ delays.
-    if detect_refinement_intent(user_message) and has_assistant_history:
-        _log.info("Fast path: Refinement (role=%s, skills=%s)", state.role, state.technical_skills)
+    # 3. Refinement check — uses DUAL detection (regex + keyword backup).
+    #    Runs BEFORE clarification so mid-conversation adds/removes are never
+    #    re-routed to the clarification path.
+    #    Pure catalog path — no LLM state extraction call.
+    if _is_refinement_turn(user_message, has_assistant_history):
+        _log.info(
+            "Fast path: Refinement (role=%s, skills=%s, keywords=%s)",
+            state.role, state.technical_skills,
+            list(set(user_message.lower().split()) & _REFINE_SIGNAL_WORDS)[:4],
+        )
         return _handle_refine(user_message, state, messages, previous_recs)
 
     # 4. Clarification / Vague check
-    # Only fire when there is NO assistant history (i.e. genuinely the first
-    # turn) and the query lacks enough context to recommend.
+    # Only fires on the FIRST turn (no prior assistant message) when there
+    # is insufficient context to generate a recommendation.
     if not has_assistant_history and _needs_clarification(user_message, state, has_previous_recs):
         _log.info("Fast path: Clarification")
         return _handle_clarification(user_message, state, messages)
