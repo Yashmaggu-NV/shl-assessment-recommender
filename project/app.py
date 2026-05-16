@@ -157,17 +157,45 @@ async def internal_exception_handler(request: Request, exc: Exception):
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Log each request with method, path, status, and elapsed time."""
-    t_start = time.time()
+    """
+    Request timing middleware.
+
+    - Uses time.perf_counter() for accurate sub-millisecond measurement.
+    - Adds X-Process-Time-MS and X-Process-Time-S response headers.
+    - Logs WARNING when request exceeds 20 s.
+    - Logs ERROR   when request exceeds 30 s.
+    - Includes X-Request-ID header value when provided by the client/proxy.
+
+    Log format: POST /chat → 200 (8421ms)
+    """
+    t_start = time.perf_counter()
+
     response = await call_next(request)
-    elapsed_ms = (time.time() - t_start) * 1000
-    _log.info(
-        "%s %s → %d (%.0fms)",
-        request.method,
-        request.url.path,
-        response.status_code,
-        elapsed_ms,
+
+    elapsed_s  = time.perf_counter() - t_start
+    elapsed_ms = elapsed_s * 1_000
+
+    # Attach timing headers (visible to callers and Railway log drains)
+    response.headers["X-Process-Time-MS"] = f"{elapsed_ms:.1f}"
+    response.headers["X-Process-Time-S"]  = f"{elapsed_s:.4f}"
+
+    # Optional request-id forwarding (set by proxies / evaluator harness)
+    req_id = request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID") or ""
+    req_id_str = f" [{req_id}]" if req_id else ""
+
+    # Build the log line  →  POST /chat → 200 (8421ms)
+    log_line = (
+        f"{request.method} {request.url.path} → "
+        f"{response.status_code} ({elapsed_ms:.0f}ms){req_id_str}"
     )
+
+    if elapsed_s >= 30:
+        _log.error("SLOW REQUEST (>30s): %s", log_line)
+    elif elapsed_s >= 20:
+        _log.warning("SLOW REQUEST (>20s): %s", log_line)
+    else:
+        _log.info(log_line)
+
     return response
 
 
