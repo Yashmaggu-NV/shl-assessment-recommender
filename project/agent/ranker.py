@@ -316,8 +316,13 @@ def rank_candidates(
                 score *= 0.08
                 _log.debug("Entry-level product penalty for mid+ query: '%s'", name)
 
-        # --- Cognitive / reasoning test penalty (unless explicitly requested) ---
-        if has_tech_skills and state.needs_cognitive is not True:
+        # --- Cognitive / reasoning test penalty (unless explicitly requested or leadership) ---
+        # For leadership/executive roles, cognitive tests are desirable — don't penalise
+        _is_leadership_role = (
+            state.needs_leadership is True
+            or state.seniority in ("executive", "director", "manager", "lead")
+        )
+        if has_tech_skills and state.needs_cognitive is not True and not _is_leadership_role:
             if _COGNITIVE_TEST_RE.search(name) and "K" not in item_codes_set:
                 score *= 0.08
                 _log.debug("Unrequested cognitive test penalty for '%s'", name)
@@ -360,8 +365,12 @@ def rank_candidates(
             if item_codes_set == {"C"} and not is_development:
                 score *= 0.1
 
-            # Penalise pure personality if not explicitly requested
-            if item_codes_set == {"P"} and state.needs_personality is not True:
+            # Penalise pure personality if not explicitly requested AND not leadership
+            if (
+                item_codes_set == {"P"}
+                and state.needs_personality is not True
+                and not _is_leadership_role
+            ):
                 score *= 0.1
 
         # Safety-critical role boosts
@@ -439,10 +448,10 @@ def _apply_battery_balance(
     selected: List[Dict[str, Any]] = []
     selected_ids: Set[str] = set()
 
-    # Compute minimum score threshold (items must be at least 20% of top score)
+    # Compute minimum score threshold (items must be at least 25% of top score)
     if scored:
         max_score = scored[0][1]
-        min_score_threshold = max_score * 0.15
+        min_score_threshold = max_score * 0.25
     else:
         min_score_threshold = 0.0
 

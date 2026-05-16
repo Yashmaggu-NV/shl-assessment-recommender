@@ -267,32 +267,25 @@ def _post_filter_candidates(
     technical_skills: Optional[List[str]] = None,
     purpose: Optional[str] = None,
     allow_generic: bool = False,
+    needs_personality: Optional[bool] = None,
+    needs_leadership: Optional[bool] = None,
 ) -> List[Tuple[Dict[str, Any], float]]:
     """
     Post-retrieval noise filter. Removes generic reports, development products,
     and assessment-centre exercises unless explicitly requested.
 
-    Also applies a relevance floor: items scoring below 30% of the max score
-    are dropped.
-
-    Args:
-        candidates: Scored candidate list
-        technical_skills: Skills from conversation state (used to decide strictness)
-        purpose: "selection" or "development" from state
-        allow_generic: If True, skip generic filtering (user explicitly asked for reports/360)
-
-    Returns:
-        Filtered candidate list with exclusion reasons logged.
+    Relevance floor: items scoring below 40% of the max score are dropped.
     """
     if not candidates:
         return []
 
     has_tech_skills = bool(technical_skills and len(technical_skills) > 0)
     is_development = purpose == "development"
+    is_leadership = bool(needs_leadership)
 
-    # Compute relevance floor (30% of max score)
+    # Relevance floor: 40% of max score — stricter than before
     max_score = max(score for _, score in candidates)
-    relevance_floor = max_score * 0.25
+    relevance_floor = max_score * 0.40
 
     filtered = []
     excluded_reasons = []
@@ -315,10 +308,8 @@ def _post_filter_candidates(
 
         # --- Generic report exclusion ---
         if _GENERIC_NAME_PATTERNS.search(name) and not is_development:
-            # Exception: if item also has K or A code and matches a tech skill, keep it
             has_relevant_code = bool(item_codes & {"K", "A", "S"})
             if has_tech_skills and has_relevant_code:
-                # Check if the item matches any technical skill
                 desc_lower = (item.get("description") or "").lower()
                 if any(skill.lower() in name_lower or skill.lower() in desc_lower
                        for skill in technical_skills):
@@ -332,18 +323,19 @@ def _post_filter_candidates(
             excluded_reasons.append((name, "Development & 360 product (purpose != development)"))
             continue
 
-        # --- Assessment Exercises exclusion (unless purpose is development or explicitly asked) ---
+        # --- Assessment Exercises exclusion ---
         if "E" in item_codes and not is_development:
             excluded_reasons.append((name, "Assessment Exercise product"))
             continue
 
-        # --- For technical queries: penalise pure personality/competency if not requested ---
-        if has_tech_skills and item_codes == {"P"}:
-            # Apply heavy penalty instead of exclusion (some personality tests are legitimate)
-            score *= 0.4
-            _log.debug("Penalised pure personality item '%s' for tech query", name)
+        # --- Personality penalty: only for pure tech-skill queries, NOT leadership ---
+        # For leadership or explicitly requested personality, skip the penalty
+        if has_tech_skills and not is_leadership and needs_personality is not True:
+            if item_codes == {"P"}:
+                score *= 0.4
+                _log.debug("Penalised pure personality item '%s' for tech query", name)
 
-        if has_tech_skills and item_codes == {"C"}:
+        if has_tech_skills and item_codes == {"C"} and not is_leadership:
             score *= 0.3
             _log.debug("Penalised pure competency item '%s' for tech query", name)
 
@@ -372,6 +364,8 @@ def hybrid_retrieve(
     technical_skills: Optional[List[str]] = None,
     purpose: Optional[str] = None,
     allow_generic: bool = False,
+    needs_personality: Optional[bool] = None,
+    needs_leadership: Optional[bool] = None,
     top_k: int = 40,
 ) -> List[Dict[str, Any]]:
     """
@@ -461,6 +455,8 @@ def hybrid_retrieve(
         technical_skills=technical_skills,
         purpose=purpose,
         allow_generic=allow_generic,
+        needs_personality=needs_personality,
+        needs_leadership=needs_leadership,
     )
 
     # Debug log: filtered candidates

@@ -184,6 +184,8 @@ def assemble_recommendations(
         technical_skills=state.technical_skills if state.technical_skills else None,
         purpose=state.purpose,
         allow_generic=allow_generic,
+        needs_personality=state.needs_personality,
+        needs_leadership=state.needs_leadership,
         top_k=40,
     )
 
@@ -225,9 +227,11 @@ def assemble_recommendations(
     if state.technical_skills:
         shortlist = _prune_weak_tech_matches(shortlist, state.technical_skills, state)
 
+    # Post-rank pruning: drop items with zero query-token overlap
+    # This is a lightweight final check catching loosely-matched battery-fill items.
+    shortlist = _prune_zero_query_overlap(shortlist, query, state)
+
     # Post-rank pruning: HARD domain-irrelevance filter for tech roles.
-    # This is the deepest safety net — even if the ranker somehow let
-    # through a zero-scored item via battery balancing, it gets removed here.
     shortlist = _post_rank_domain_filter(shortlist, state)
 
     _log.info(
@@ -519,6 +523,71 @@ def _prune_weak_tech_matches(
             _log.info("Tech pruning dropped: '%s' (no skill overlap)", name)
 
     return pruned
+
+
+def _prune_zero_query_overlap(
+    shortlist: List[Dict[str, Any]],
+    query: str,
+    state: "ConversationState",
+) -> List[Dict[str, Any]]:
+    """
+    Final lightweight relevance check: drop items with ZERO meaningful token
+    overlap with the retrieval query, unless they are in an explicitly
+    requested category.
+
+    Exemptions (always kept):
+    - Explicitly included items (state.included_names)
+    - Items in explicitly requested categories (P when needs_personality, etc.)
+    - Items in state.included_categories
+
+    Only runs when query has >= 3 meaningful tokens.
+    """
+    from utils.helpers import extract_keywords
+
+    query_tokens = set(extract_keywords(query))
+    if len(query_tokens) < 3:
+        return shortlist
+
+    included_norms = {normalize_text(n) for n in (state.included_names or [])}
+
+    exempt_codes: set = set(state.included_categories or [])
+    if state.needs_personality is True:
+        exempt_codes.add("P")
+    if state.needs_cognitive is True:
+        exempt_codes.add("A")
+    if state.needs_sjt is True:
+        exempt_codes.add("B")
+    if state.needs_simulation is True:
+        exempt_codes.add("S")
+    if state.needs_leadership is True:
+        exempt_codes.update({"P", "A"})
+
+    pruned = []
+    for item in shortlist:
+        name = item.get("name", "")
+        name_norm = normalize_text(name)
+
+        if name_norm in included_norms:
+            pruned.append(item)
+            continue
+
+        item_codes = {
+            KEY_TO_CODE.get(k) for k in item.get("keys", [])
+            if KEY_TO_CODE.get(k)
+        }
+        if item_codes & exempt_codes:
+            pruned.append(item)
+            continue
+
+        item_text = f"{name} {item.get('description', '')}"
+        item_tokens = set(extract_keywords(item_text))
+
+        if query_tokens & item_tokens:
+            pruned.append(item)
+        else:
+            _log.info("Zero query-overlap pruned: '%s'", name)
+
+    return pruned if pruned else shortlist
 
 
 # Domain-irrelevance regex — same patterns used across ranker and chat_logic
