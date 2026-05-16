@@ -151,14 +151,22 @@ def build_chat_response(
             assessment_word = "assessment" if actual_count == 1 else "assessments"
             here_verb = "Here is" if actual_count == 1 else "Here are"
             reply = _re.sub(
-                r"\b(?:here (?:are|is)) \d+ assessments?\b",
+                r"\b(?:here (?:are|is)) (\d+) assessments?\b",
                 f"{here_verb} {actual_count} {assessment_word}",
                 reply,
                 flags=_re.IGNORECASE,
             )
-            # Also fix "X assessment(s)" standalone count patterns
+            # Fix patterns like "I recommend X assessments", "the following X assessments",
+            # "these X assessments", "updated list of X", "top X assessments"
             reply = _re.sub(
-                r"\b\d+ assessments?\b",
+                r"(?:recommend|following|these|updated list of|top|selected|shortlist of)\s+(\d+)\s+assessments?\b",
+                lambda m: m.group(0).replace(m.group(1), str(actual_count)).rstrip("s") + ("s" if actual_count > 1 else ""),
+                reply,
+                flags=_re.IGNORECASE,
+            )
+            # Also fix standalone "X assessment(s)" count patterns
+            reply = _re.sub(
+                r"\b(\d+) assessments?\b",
                 f"{actual_count} {assessment_word}",
                 reply,
                 flags=_re.IGNORECASE,

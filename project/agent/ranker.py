@@ -542,9 +542,25 @@ def _get_category_targets(
     elif state.purpose == "development":
         targets = {"P": 2, "C": 2, "K": 1, "D": 1}
 
-    # Technical role with skills: K-only battery (no cognitive/sim unless requested)
+    # Technical role with skills: K-dominant battery, but make room for
+    # explicitly requested categories (personality, cognitive, etc.)
     elif has_tech_skills:
-        targets = {"K": 10}
+        # Start with K-dominant battery
+        k_slots = 10
+        # Reserve slots for explicitly requested categories
+        if state.needs_personality is True:
+            k_slots -= 2  # room for personality tests (e.g., OPQ32r)
+            targets["P"] = 2
+        if state.needs_cognitive is True:
+            k_slots -= 1
+            targets["A"] = 1
+        if state.needs_sjt is True:
+            k_slots -= 1
+            targets["B"] = 1
+        if state.needs_simulation is True:
+            k_slots -= 1
+            targets["S"] = 1
+        targets["K"] = max(k_slots, 3)  # always keep at least 3 K slots
 
     # General senior IC: technical + cognitive + personality
     elif state.seniority in ("senior", "lead"):

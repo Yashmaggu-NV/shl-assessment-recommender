@@ -511,6 +511,8 @@ def _handle_recommend(
     if parsed and parsed.get("recommendations"):
         items = _resolve_llm_recommendations(parsed["recommendations"])
         if items:
+            # Apply domain-irrelevance filtering to LLM-resolved items
+            items = _filter_domain_irrelevant(items, state)
             reply = parsed.get("reply", "Here are my recommended assessments.")
             eoc = parsed.get("end_of_conversation", False)
             return build_chat_response(reply=reply, items=items, end_of_conversation=eoc)
@@ -532,44 +534,76 @@ def _handle_refine(
     messages: List[Dict[str, str]],
     previous_recs: List[Dict[str, str]],
 ) -> ChatResponse:
-    """Apply refinement to the existing shortlist."""
+    """Apply refinement to the existing shortlist.
+
+    Key design rule: refinement UPDATES the shortlist, it does not restart
+    retrieval from scratch.  The original role context (state.role,
+    state.technical_skills, etc.) is preserved and used as the retrieval
+    anchor so that results never drift into unrelated domains.
+    """
     # Reconstruct previous items from rec dicts
     prev_items = _recs_to_items(previous_recs)
 
-    # If we have no previous items to refine, try mechanical refinement first,
-    # then fall back to a fresh recommendation using existing state context
+    # --- 1. Parse category-level additions from the message ---------------
+    msg_lower = user_message.lower()
+    if "personality" in msg_lower:
+        state.needs_personality = True
+        if "P" not in state.included_categories:
+            state.included_categories.append("P")
+    if "teamwork" in msg_lower or "team" in msg_lower:
+        state.needs_personality = True  # teamwork measured via personality
+        if "P" not in state.included_categories:
+            state.included_categories.append("P")
+    if "cognitive" in msg_lower or "reasoning" in msg_lower:
+        state.needs_cognitive = True
+    if "leadership" in msg_lower:
+        state.needs_leadership = True
+    if "sjt" in msg_lower or "situational" in msg_lower:
+        state.needs_sjt = True
+    if "communication" in msg_lower:
+        # Communication is typically a knowledge test in the SHL catalog
+        if "K" not in state.included_categories:
+            state.included_categories.append("K")
+
+    # --- 2. Apply structural refinement intent ---------------------------
+    intent = detect_refinement_intent(user_message)
+    if intent:
+        action, target, replacement = intent
+        target_lower = target.lower()
+        if action == "add":
+            # Interpret category-level additions (don't push raw category
+            # descriptions into included_names — that pollutes retrieval)
+            _is_category_add = False
+            if "personality" in target_lower:
+                state.needs_personality = True
+                _is_category_add = True
+            if "teamwork" in target_lower or "team" in target_lower:
+                state.needs_personality = True
+                _is_category_add = True
+            if "cognitive" in target_lower or "reasoning" in target_lower:
+                state.needs_cognitive = True
+                _is_category_add = True
+            if "sjt" in target_lower or "situational" in target_lower:
+                state.needs_sjt = True
+                _is_category_add = True
+            if "communication" in target_lower:
+                _is_category_add = True
+            # Only push into included_names if it looks like a specific
+            # assessment name (not a category description)
+            if not _is_category_add and target not in state.included_names:
+                state.included_names.append(target)
+        elif action == "remove":
+            if target not in state.excluded_names:
+                state.excluded_names.append(target)
+
+    # --- 3. Build retrieval query from ROLE CONTEXT, not refinement text --
+    from agent.recommendation_engine import build_retrieval_query
+    role_query = build_retrieval_query(state, "")  # Use state only
+
+    # If we have no previous items to refine, generate a fresh shortlist
+    # using the existing state context (which now includes the refinement)
     if not prev_items:
         _log.info("No previous shortlist found. Applying refinement as fresh recommendation with existing state.")
-
-        # Parse category-level additions from the message
-        msg_lower = user_message.lower()
-        if "personality" in msg_lower:
-            state.needs_personality = True
-        if "teamwork" in msg_lower or "team" in msg_lower:
-            state.needs_personality = True  # teamwork measured via personality
-        if "cognitive" in msg_lower or "reasoning" in msg_lower:
-            state.needs_cognitive = True
-        if "leadership" in msg_lower:
-            state.needs_leadership = True
-        if "sjt" in msg_lower or "situational" in msg_lower:
-            state.needs_sjt = True
-
-        # Try to apply refinement intent (e.g., "add AWS") by generating
-        # a fresh shortlist using the existing conversation state
-        intent = detect_refinement_intent(user_message)
-        if intent:
-            action, target, replacement = intent
-            # Fold the refinement into state
-            if action == "add":
-                if target not in (state.included_names or []):
-                    state.included_names.append(target)
-            elif action == "remove":
-                if target not in (state.excluded_names or []):
-                    state.excluded_names.append(target)
-
-        # Build retrieval query from ROLE CONTEXT, not the refinement text
-        from agent.recommendation_engine import build_retrieval_query
-        role_query = build_retrieval_query(state, "")
         items = assemble_recommendations(
             user_message=role_query,
             state=state,
@@ -577,6 +611,8 @@ def _handle_refine(
             max_results=10,
         )
         if items:
+            # Apply domain-irrelevance filtering for tech roles
+            items = _filter_domain_irrelevant(items, state)
             reply = _build_recommendation_reply(state, items)
             return build_chat_response(reply=reply, items=items, end_of_conversation=False)
         else:
@@ -585,35 +621,7 @@ def _handle_refine(
                 is_clarification=True,
             )
 
-    # Get candidates including the prev items + new retrieval
-    # IMPORTANT: build the query from the ROLE CONTEXT (state), not the
-    # refinement message ("add personality tests"). Using the refinement
-    # text as the search query causes drift into unrelated domains.
-    from agent.recommendation_engine import build_retrieval_query
-
-    # Apply refinement intent to state BEFORE retrieval
-    intent = detect_refinement_intent(user_message)
-    if intent:
-        action, target, replacement = intent
-        target_lower = target.lower()
-        if action == "add":
-            # Interpret category-level additions
-            if "personality" in target_lower or "personality" in user_message.lower():
-                state.needs_personality = True
-            if "teamwork" in target_lower or "team" in target_lower or "teamwork" in user_message.lower():
-                state.needs_personality = True  # teamwork measured via personality tests
-            if "cognitive" in target_lower or "reasoning" in target_lower:
-                state.needs_cognitive = True
-            if "sjt" in target_lower or "situational" in target_lower:
-                state.needs_sjt = True
-            if target not in state.included_names:
-                state.included_names.append(target)
-        elif action == "remove":
-            if target not in state.excluded_names:
-                state.excluded_names.append(target)
-
-    # Build retrieval query from the original role context, NOT the refinement text
-    role_query = build_retrieval_query(state, "")  # Use state only
+    # --- 4. Retrieve new candidates anchored to original role context -----
     new_candidates = hybrid_retrieve(
         query=role_query,
         state_context=state.to_context_string(),
@@ -639,9 +647,14 @@ def _handle_refine(
     if parsed and parsed.get("recommendations"):
         items = _resolve_llm_recommendations(parsed["recommendations"])
         if items:
-            reply = parsed.get("reply", "Updated shortlist:")
-            eoc = parsed.get("end_of_conversation", False)
-            return build_chat_response(reply=reply, items=items, end_of_conversation=eoc)
+            # Critical: apply domain-irrelevance filtering AFTER LLM
+            # resolution so that sales/customer-service/manufacturing
+            # items never survive when the role is tech/software.
+            items = _filter_domain_irrelevant(items, state)
+            if items:
+                reply = parsed.get("reply", "Updated shortlist:")
+                eoc = parsed.get("end_of_conversation", False)
+                return build_chat_response(reply=reply, items=items, end_of_conversation=eoc)
 
     # Fallback: detect refinement intent and apply mechanically
     if intent:
@@ -654,16 +667,19 @@ def _handle_refine(
             current_shortlist=prev_items,
             state=state,
         )
+        updated_items = _filter_domain_irrelevant(updated_items, state)
         reply = f"{msg} Updated shortlist:"
         return build_chat_response(reply=reply, items=updated_items, end_of_conversation=False)
 
-    # No refinement detected — re-recommend using role context
+    # No refinement detected — re-recommend using role context with
+    # previous recommendations for continuity
     items = assemble_recommendations(
         user_message=role_query,  # Use role-based query, not refinement text
         state=state,
         previous_recommendations=previous_recs,
         max_results=10,
     )
+    items = _filter_domain_irrelevant(items, state)
     reply = "Updated recommendations based on your request:"
     return build_chat_response(reply=reply, items=items, end_of_conversation=False)
 
@@ -848,6 +864,67 @@ def _resolve_llm_recommendations(
         )
 
     return resolved
+
+
+# Domain-irrelevance regex for tech roles — matches items from unrelated
+# job families that should never appear when the original role is in
+# software / engineering / data / IT.
+_IRRELEVANT_DOMAIN_RE = re.compile(
+    r"\b(sales|selling|customer service|call cent|contact cent"
+    r"|retail|merchandis|cashier|store|shop"
+    r"|manufactur|industrial|mechanical|plant operator"
+    r"|warehouse|logistics|forklift|driver"
+    r"|nursing|nurse|healthcare aide|carer"
+    r"|clerical|filing|receptionist"
+    r"|food service|hospitality|housekeep)\b",
+    re.IGNORECASE,
+)
+
+_TECH_ROLE_KEYWORDS = (
+    "software", "engineer", "developer", "programmer", "coder",
+    "data", "backend", "frontend", "fullstack", "devops", "sre",
+    "architect", "tech", "it ", "computing",
+)
+
+
+def _filter_domain_irrelevant(
+    items: List[Dict[str, Any]],
+    state: ConversationState,
+) -> List[Dict[str, Any]]:
+    """
+    Post-resolution domain-irrelevance filter.
+
+    When the conversation role is a tech/software role, remove items whose
+    name or description belong to unrelated domains (sales, customer service,
+    manufacturing, etc.).  This is the safety net that catches domain drift
+    that the LLM or retriever may introduce, especially during refinement
+    turns where the user asks to "add personality/teamwork assessments".
+
+    Items whose *only* purpose is domain-neutral (e.g., OPQ32r, Verify G+,
+    Business Communication) are explicitly kept.
+    """
+    if not state.role:
+        return items
+
+    role_lower = (state.role or "").lower()
+    is_tech_role = any(kw in role_lower for kw in _TECH_ROLE_KEYWORDS)
+    if not is_tech_role:
+        return items
+
+    filtered = []
+    for item in items:
+        item_text = f"{item.get('name', '')} {item.get('description', '')}"
+        if _IRRELEVANT_DOMAIN_RE.search(item_text):
+            _log.info(
+                "Domain-irrelevance filter removed '%s' (tech role: %s)",
+                item.get("name", ""), state.role,
+            )
+            continue
+        filtered.append(item)
+
+    # Guard: never return an empty list if we had items (would lose the
+    # shortlist entirely). Fall back to original if everything got filtered.
+    return filtered if filtered else items
 
 
 def _recs_to_items(recs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

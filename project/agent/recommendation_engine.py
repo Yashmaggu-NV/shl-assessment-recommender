@@ -420,7 +420,14 @@ def _prune_weak_tech_matches(
     Final strict pruning for technical queries.
 
     Removes items whose name and description don't mention ANY of the
-    requested technical skills. Exception: explicitly included items survive.
+    requested technical skills.
+
+    Exceptions (items that survive even without skill overlap):
+      - Explicitly included items (state.included_names)
+      - Personality (P) items when state.needs_personality is True
+      - Cognitive (A) items when state.needs_cognitive is True
+      - SJT (B) items when state.needs_sjt is True
+      - Simulation (S) items when state.needs_simulation is True
 
     Also enforces seniority alignment: entry-level products are dropped
     for mid/senior queries.
@@ -449,6 +456,18 @@ def _prune_weak_tech_matches(
 
     combined_re = _re.compile("|".join(skill_patterns), _re.IGNORECASE)
 
+    # Build set of category codes that are explicitly requested and
+    # should be exempt from tech-skill-overlap pruning.
+    exempt_codes = set()
+    if state.needs_personality is True:
+        exempt_codes.add("P")
+    if state.needs_cognitive is True:
+        exempt_codes.add("A")
+    if state.needs_sjt is True:
+        exempt_codes.add("B")
+    if state.needs_simulation is True:
+        exempt_codes.add("S")
+
     pruned = []
     for item in items:
         name = item.get("name", "")
@@ -456,6 +475,16 @@ def _prune_weak_tech_matches(
 
         # Always keep explicitly included items
         if name_norm in included_norms:
+            pruned.append(item)
+            continue
+
+        # Keep items in explicitly requested categories even if they
+        # don't mention a technical skill (e.g., OPQ32r for personality)
+        item_codes = {
+            KEY_TO_CODE.get(k) for k in item.get("keys", [])
+            if KEY_TO_CODE.get(k)
+        }
+        if item_codes & exempt_codes:
             pruned.append(item)
             continue
 

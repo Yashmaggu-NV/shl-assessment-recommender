@@ -89,6 +89,12 @@ Analyze the LATEST user message and the full conversation history, then produce 
 - For compare: produce a grounded textual comparison in the reply field. Return recommendations=[].
 - If a user asks to remove a test they previously asked to add, remove it precisely.
 - Keep replies concise (3–6 sentences max) unless a detailed comparison is asked for.
+
+### Refinement-specific rules (action=refine):
+- PRESERVE the original role context. If the conversation started about a software engineer, ALL recommended assessments must still be relevant to a software engineer role.
+- When the user asks to "add personality" or "add teamwork assessments", add only personality/behavioral assessments that are role-neutral (e.g., OPQ32r, team types profiles). Do NOT add domain-specific assessments from unrelated fields (e.g., sales, customer service, manufacturing, industrial).
+- NEVER include assessments whose names contain: sales, selling, customer service, call centre, contact centre, retail, manufacturing, industrial, mechanical, warehouse, logistics, nursing, clerical, food service, hospitality — unless the original role IS in that domain.
+- The reply count must match the number of items in the recommendations array.
 """
 
 # ---------------------------------------------------------------------------
