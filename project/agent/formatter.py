@@ -56,13 +56,16 @@ def format_recommendations(
     """
     import re
 
-    # Last-mile filter: strip report/guide/document products that survived
+    # Last-mile filter: strip report/guide/document/exercise products that survived
     # the retriever and ranker filters. This is the final safety net.
     _REPORT_FILTER = re.compile(
         r"\breport\b|\bguide\b|\bprofiling\b|\bplanner\b"
         r"|\bremoteworkq\b|\bdigital readiness\b|\bhipo\b"
         r"|\b360\b|\bdev tips\b|\bscenarios\b"
-        r"|\bglobal skills development\b|\bvirtual assessment\b",
+        r"|\bglobal skills development\b|\bvirtual assessment\b"
+        r"|\bexercises?\b|\bparticipant\b"
+        r"|\bdevelopment cent(?:er|re)\b|\bassessment cent(?:er|re)\b"
+        r"|\bdevelopment action\b|\btalent review\b|\bsuccession\b",
         re.IGNORECASE,
     )
 

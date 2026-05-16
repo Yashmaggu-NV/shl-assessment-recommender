@@ -84,7 +84,7 @@ LEADERSHIP_INSTRUMENTS = {
 # Generic / noise patterns that should be penalised in technical queries
 _GENERIC_NAME_RE = re.compile(
     r"\breport\b|\b360\b|\bglobal skills\b|\bvirtual assessment\b"
-    r"|\bdevelopment cent[er|re]\b|\bassessment cent[er|re]\b"
+    r"|\bdevelopment cent(?:er|re)\b|\bassessment cent(?:er|re)\b"
     r"|\bgroup report\b|\bcandidate report\b|\bemployee report\b"
     r"|\bdev tips\b|\bperformance potential\b|\benterprise leadership\b"
     r"|\btalent audit\b|\bstandard report\b|\bcompetency report\b"
@@ -95,7 +95,11 @@ _GENERIC_NAME_RE = re.compile(
     r"|\bgeneric catalog\b|\bcatalog document\b"
     r"|\bremoteworkq\b|\bdigital readiness\b|\bhipo assessment\b"
     r"|\bworkplace safety\b.*\breport\b"
-    r"|\bplanner report\b|\bguide\b",
+    r"|\bplanner report\b|\bguide\b"
+    r"|\bexercises?\b|\bparticipant\b"
+    r"|\bcenter exercises\b|\bcentre exercises\b"
+    r"|\bdevelopment action\b|\btalent review\b"
+    r"|\bsuccession\b|\bbenchmark\b.*\breport\b",
     re.IGNORECASE,
 )
 

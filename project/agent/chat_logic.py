@@ -742,11 +742,14 @@ def _resolve_llm_recommendations(
     Ensures no hallucinated items slip through.
     Also filters out generic report/guide products the LLM may have selected.
     """
-    # Report filter for LLM-resolved items
+    # Report/exercise filter for LLM-resolved items
     _REPORT_RE = re.compile(
         r"\breport\b|\bguide\b|\bprofiling\b|\bplanner\b"
         r"|\bremoteworkq\b|\bdigital readiness\b|\bhipo\b"
-        r"|\b360\b|\bscenarios\b|\bglobal skills development\b",
+        r"|\b360\b|\bscenarios\b|\bglobal skills development\b"
+        r"|\bexercises?\b|\bparticipant\b"
+        r"|\bdevelopment cent(?:er|re)\b|\bassessment cent(?:er|re)\b"
+        r"|\bdevelopment action\b|\btalent review\b|\bsuccession\b",
         re.IGNORECASE,
     )
 
