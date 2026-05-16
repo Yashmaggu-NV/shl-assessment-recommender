@@ -533,9 +533,15 @@ def _handle_refine(
     role_query = build_retrieval_query(state, user_message)
 
     # If we have no previous items to refine, generate a fresh shortlist
-    # using the existing state context (which now includes the refinement)
+    # from state context (which now includes the refinement additions).
+    # This path is correct when the assistant's prior turn was a clarification
+    # question (not a recommendation), so prev_items is empty.
     if not prev_items:
-        _log.info("No previous shortlist found. Applying refinement as fresh recommendation with existing state.")
+        _log.info(
+            "No previous shortlist found. Generating fresh shortlist from state context "
+            "(role=%s, skills=%s).",
+            state.role, state.technical_skills,
+        )
         items = assemble_recommendations(
             user_message=role_query,
             state=state,
@@ -546,11 +552,24 @@ def _handle_refine(
             items = _filter_domain_irrelevant(items, state)
             reply = _build_recommendation_reply(state, items)
             return build_chat_response(reply=reply, items=items, end_of_conversation=False)
-        else:
-            return build_chat_response(
-                reply="I couldn't reconstruct the previous shortlist. Could you restate your full hiring need so I can build a fresh recommendation?",
-                is_clarification=True,
+        elif state.role:
+            # Role is known but no catalog matches — use a broader query
+            broader = state.role
+            items = assemble_recommendations(
+                user_message=broader,
+                state=state,
+                previous_recommendations=None,
+                max_results=10,
             )
+            items = _filter_domain_irrelevant(items, state)
+            if items:
+                reply = _build_recommendation_reply(state, items)
+                return build_chat_response(reply=reply, items=items, end_of_conversation=False)
+        # Only ask for restatement when we have zero context at all
+        return build_chat_response(
+            reply="I'd be happy to help. Could you share the role you're hiring for and any key requirements?",
+            is_clarification=True,
+        )
 
     # --- 4. Retrieve new candidates anchored to original role context -----
     new_candidates = hybrid_retrieve(
@@ -983,25 +1002,37 @@ def process_chat(request: ChatRequest) -> ChatResponse:
 
     # -----------------------------------------------------------------------
     # FAST-PATH DECISION TREE
-    # Avoid LLM state extraction if the turn can be handled deterministically
+    # Avoid LLM state extraction if the turn can be handled deterministically.
+    # ORDER MATTERS: refinement must be checked before clarification.
     # -----------------------------------------------------------------------
-    
+
     # 1. Refusal check
     refusal_reason = classify_refusal(user_message)
     if refusal_reason:
-        _log.info("Fast path triggered: Refusal (%s)", refusal_reason)
+        _log.info("Fast path: Refusal (%s)", refusal_reason)
         return _handle_refuse(user_message)
 
     # 2. Comparison check
     if is_comparison_request(user_message) and extract_comparison_names(user_message):
-        _log.info("Fast path triggered: Comparison")
+        _log.info("Fast path: Comparison")
         return _handle_compare(user_message, state, messages, previous_recs)
 
-    # 3. Clarification / Vague check
-    # If the regex-only state is still vague (e.g. "Hiring a software engineer"
-    # lacks seniority), we skip the LLM and ask for clarification immediately.
-    if _needs_clarification(user_message, state, has_previous_recs):
-        _log.info("Fast path triggered: Clarification")
+    # 3. Refinement check — MUST come before clarification gating.
+    #    If the user has mid-conversation history and says "add X" or "remove Y",
+    #    route directly to refine even if state.seniority is missing.
+    if detect_refinement_intent(user_message) and has_assistant_history:
+        _log.info("Fast path: Refinement (has assistant history)")
+        # Escalate to LLM state extraction so refine handler has full context
+        llm_state = _extract_state_via_llm(messages)
+        if llm_state:
+            state = reconstruct_state_from_history(messages, llm_state=llm_state)
+        return _handle_refine(user_message, state, messages, previous_recs)
+
+    # 4. Clarification / Vague check
+    # Only fire when there is NO assistant history (i.e. genuinely the first
+    # turn) and the query lacks enough context to recommend.
+    if not has_assistant_history and _needs_clarification(user_message, state, has_previous_recs):
+        _log.info("Fast path: Clarification")
         return _handle_clarification(user_message, state, messages)
 
     # -----------------------------------------------------------------------

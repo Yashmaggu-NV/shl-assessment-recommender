@@ -303,14 +303,16 @@ def reconstruct_state_from_history(
     if not state.languages:
         state.languages = _extract_languages(full_user_text)
 
-    # Technical skills
+    # Technical skills — scan all messages so skills mentioned in assistant
+    # confirmation ("So you need Kubernetes experience...") are preserved.
     if not state.technical_skills:
-        state.technical_skills = _extract_tech_skills(full_user_text)
+        state.technical_skills = _extract_tech_skills(full_all_text)
 
-    # Role — regex fallback if LLM didn't populate it.
-    # Scans ALL user messages so role context is never lost across turns.
+    # Role — scan ALL messages so role is never lost when it was stated
+    # in the first user turn and subsequent turns are refinements.
     if not state.role:
-        state.role = _extract_role(full_user_text)
+        # Prefer user-stated role; fall back to full conversation if not found
+        state.role = _extract_role(full_user_text) or _extract_role(full_all_text)
 
     # Category exclusions from user messages
     _apply_category_edits(state, messages)

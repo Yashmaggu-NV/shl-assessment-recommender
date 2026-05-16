@@ -549,6 +549,115 @@ def test_19_fast_path_clarification():
     return resp
 
 
+def _assert_no_restatement(resp, test_name: str):
+    """Fail if the response is asking the user to restate everything."""
+    bad_phrases = [
+        "couldn't reconstruct",
+        "restate your full hiring need",
+        "could you restate",
+        "could you share the role",
+    ]
+    reply_lower = resp.reply.lower()
+    for phrase in bad_phrases:
+        if phrase in reply_lower:
+            print(f"  ✗ FAIL ({test_name}): Got restatement request: {resp.reply[:100]}")
+            return False
+    return True
+
+
+def test_20_devops_refinement_regression():
+    """Regression: DevOps + assistant clarification + refinement must NOT restate."""
+    print("\n" + "=" * 60)
+    print("TEST 20: DevOps refinement regression")
+    print("=" * 60)
+    resp = run_chat([
+        {"role": "user", "content": "Hiring a DevOps engineer"},
+        {"role": "assistant", "content": "What technical or soft skills are important for this DevOps role?"},
+        {"role": "user", "content": "Add leadership and collaboration assessments too"},
+    ])
+    validate_schema(resp, "devops_refinement")
+    ok = _assert_no_restatement(resp, "devops_refinement")
+    print(f"  Reply: {resp.reply[:120]}")
+    print(f"  Recs count: {len(resp.recommendations)}")
+    print_recs(resp)
+    if ok and resp.recommendations:
+        print("  ✓ PASS")
+    elif ok:
+        print("  ⚠ WARNING: No recs returned but no restatement error")
+    return resp
+
+
+def test_21_ml_engineer_refinement_regression():
+    """Regression: ML Engineer + clarification + personality add must preserve domain."""
+    print("\n" + "=" * 60)
+    print("TEST 21: ML engineer refinement regression")
+    print("=" * 60)
+    resp = run_chat([
+        {"role": "user", "content": "Hiring a machine learning engineer"},
+        {"role": "assistant", "content": "What seniority level are you targeting?"},
+        {"role": "user", "content": "Add personality and teamwork assessments too"},
+    ])
+    validate_schema(resp, "ml_refinement")
+    ok = _assert_no_restatement(resp, "ml_refinement")
+    print(f"  Reply: {resp.reply[:120]}")
+    print(f"  Recs count: {len(resp.recommendations)}")
+    print_recs(resp)
+    # Ensure no forbidden domain items leaked in
+    forbidden = ["sales transformation", "customer service phone", "manufacturing", "safety"]
+    names_lower = [r.name.lower() for r in resp.recommendations]
+    leaked = [f for f in forbidden if any(f in n for n in names_lower)]
+    if leaked:
+        print(f"  ✗ FAIL: Domain leaked: {leaked}")
+    elif ok and resp.recommendations:
+        print("  ✓ PASS")
+    return resp
+
+
+def test_22_cloud_engineer_refinement_regression():
+    """Regression: Cloud Engineer + clarification + add cognitive must work."""
+    print("\n" + "=" * 60)
+    print("TEST 22: Cloud engineer refinement regression")
+    print("=" * 60)
+    resp = run_chat([
+        {"role": "user", "content": "Looking for assessments for a cloud engineer with AWS experience"},
+        {"role": "assistant", "content": "Are you assessing for selection or development purposes?"},
+        {"role": "user", "content": "Add cognitive reasoning assessments as well"},
+    ])
+    validate_schema(resp, "cloud_refinement")
+    ok = _assert_no_restatement(resp, "cloud_refinement")
+    print(f"  Reply: {resp.reply[:120]}")
+    print(f"  Recs count: {len(resp.recommendations)}")
+    print_recs(resp)
+    if ok and resp.recommendations:
+        print("  ✓ PASS")
+    return resp
+
+
+def test_23_software_engineer_refinement_regression():
+    """Regression: Software engineer (no seniority) → clarify → refine must work."""
+    print("\n" + "=" * 60)
+    print("TEST 23: Software engineer refinement regression")
+    print("=" * 60)
+    resp = run_chat([
+        {"role": "user", "content": "Hiring a software engineer"},
+        {"role": "assistant", "content": "What seniority level is this? Entry, mid, senior, or leadership?"},
+        {"role": "user", "content": "Senior level — also add personality and teamwork assessments"},
+    ])
+    validate_schema(resp, "swe_refinement")
+    ok = _assert_no_restatement(resp, "swe_refinement")
+    print(f"  Reply: {resp.reply[:120]}")
+    print(f"  Recs count: {len(resp.recommendations)}")
+    print_recs(resp)
+    forbidden = ["sales", "customer service phone", "manufacturing", "safety"]
+    names_lower = [r.name.lower() for r in resp.recommendations]
+    leaked = [f for f in forbidden if any(f in n for n in names_lower)]
+    if leaked:
+        print(f"  ✗ FAIL: Domain leaked: {leaked}")
+    elif ok and resp.recommendations:
+        print("  ✓ PASS")
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Run all
 # ---------------------------------------------------------------------------
@@ -577,6 +686,10 @@ if __name__ == "__main__":
     test_17_router_tier_fallback()
     test_18_fast_path_vague()
     test_19_fast_path_clarification()
+    test_20_devops_refinement_regression()
+    test_21_ml_engineer_refinement_regression()
+    test_22_cloud_engineer_refinement_regression()
+    test_23_software_engineer_refinement_regression()
 
     print("\n" + "=" * 60)
     print("All tests completed.")
