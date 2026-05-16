@@ -6,7 +6,7 @@ This is the brain of the agent. It:
   2. Reconstructs conversation state from full message history
   3. Classifies the turn: clarify | recommend | refine | compare | refuse | close
   4. Calls the appropriate sub-module
-  5. Calls Grok (xAI) for natural-language generation
+  5. Calls OpenRouter (Mistral) for natural-language generation
   6. Returns a structured ChatResponse
 
 The entire pipeline is stateless — state is rebuilt from messages on every call.
@@ -66,43 +66,43 @@ _log = get_logger(__name__)
 # LLM initialisation (lazy, singleton)
 # ---------------------------------------------------------------------------
 
-_grok_client = None
-_GROK_MODEL_NAME = "grok-3-mini-fast"
+_llm_client = None
+_LLM_MODEL_NAME = "mistralai/mistral-7b-instruct"
 _LLM_TIMEOUT = 25  # seconds — stay inside 30s evaluator timeout
 
 
-def _get_grok_client():
-    """Lazily initialise the Grok (xAI) client via OpenAI-compatible API."""
-    global _grok_client
-    if _grok_client is None:
-        api_key = get_env("XAI_API_KEY")
+def _get_llm_client():
+    """Lazily initialise the OpenRouter client via OpenAI-compatible API."""
+    global _llm_client
+    if _llm_client is None:
+        api_key = get_env("OPENROUTER_API_KEY")
         if not api_key:
-            _log.warning("XAI_API_KEY not set — LLM calls will be skipped.")
+            _log.warning("OPENROUTER_API_KEY not set — LLM calls will be skipped.")
             return None
         try:
-            _grok_client = OpenAI(
+            _llm_client = OpenAI(
                 api_key=api_key,
-                base_url="https://api.x.ai/v1",
+                base_url="https://openrouter.ai/api/v1",
             )
-            _log.info("Grok client initialised with model '%s'.", _GROK_MODEL_NAME)
+            _log.info("OpenRouter client initialised with model '%s'.", _LLM_MODEL_NAME)
         except Exception as e:
-            _log.error("Failed to initialise Grok client: %s", e)
-    return _grok_client
+            _log.error("Failed to initialise OpenRouter client: %s", e)
+    return _llm_client
 
 
 def _call_llm(prompt: str, timeout: int = _LLM_TIMEOUT) -> Optional[str]:
     """
-    Call the Grok LLM with a prompt and return the text response.
+    Call the OpenRouter LLM with a prompt and return the text response.
     Returns None on failure (caller handles fallback).
     """
-    client = _get_grok_client()
+    client = _get_llm_client()
     if client is None:
         return None
 
     try:
         start = time.time()
         response = client.chat.completions.create(
-            model=_GROK_MODEL_NAME,
+            model=_LLM_MODEL_NAME,
             messages=[
                 {"role": "user", "content": prompt},
             ],
@@ -118,7 +118,7 @@ def _call_llm(prompt: str, timeout: int = _LLM_TIMEOUT) -> Optional[str]:
             return text.strip()
         return None
     except Exception as e:
-        _log.error("LLM call failed: %s", e)
+        _log.error("LLM call failed (OpenRouter): %s", e)
         return None
 
 

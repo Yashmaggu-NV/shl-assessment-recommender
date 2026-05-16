@@ -6,7 +6,7 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 pydantic>=2.7.1
 
-# LLM — Grok (xAI, OpenAI-compatible)
+# LLM — OpenRouter (OpenAI-compatible)
 openai>=1.30.0
 
 # HTTP client
