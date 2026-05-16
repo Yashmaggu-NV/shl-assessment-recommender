@@ -19,6 +19,7 @@ Usage:
     raw = route_llm_call(prompt, turn_type=TurnType.REFINE)
 """
 
+import concurrent.futures
 import json
 import re
 import time
@@ -96,14 +97,20 @@ _TURN_TIER_MAP: Dict[TurnType, List[List[str]]] = {
 _DEFAULT_TIERS = [_TIER1, _TIER2]
 
 # ---------------------------------------------------------------------------
-# Timeouts (seconds per model call attempt)
+# Timeouts (seconds per model call — TRUE WALL-CLOCK via ThreadPoolExecutor)
+# These are intentionally short. If a model won't respond in this window,
+# it is not fast enough for the 30-second evaluator budget.
 # ---------------------------------------------------------------------------
 _TIMEOUT_BY_TIER = {
-    0: 12,   # Tier 1 — fast free models
-    1: 15,   # Tier 2 — reasoning models may be slower
-    2: 20,   # Tier 3 — paid models, higher timeout
-    3: 25,   # Tier 4 — last resort
+    0: 5,    # Tier 1 — fast free models must reply quickly
+    1: 7,    # Tier 2 — reasoning models
+    2: 10,   # Tier 3 — paid stable models
+    3: 12,   # Tier 4 — last resort
 }
+
+# Global budget: if total elapsed across all model attempts exceeds this,
+# stop cascading and return None (catalog-only fallback).
+_GLOBAL_BUDGET_S = 20.0
 
 # ---------------------------------------------------------------------------
 # Client singleton
@@ -253,82 +260,100 @@ def route_llm_call(
     total_attempts = 0
     overall_start = time.time()
 
-    for tier_idx, tier_models in enumerate(tiers):
-        timeout = _TIMEOUT_BY_TIER.get(tier_idx, 15)
+    # Thread pool used to enforce true wall-clock timeouts on blocking HTTP calls.
+    # The OpenAI SDK's own `timeout` parameter is a socket-inactivity timeout,
+    # NOT a wall-clock deadline — OpenRouter can hold the connection for 70+s.
+    _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
-        for model in tier_models:
-            # Timing protection: Stop if we are approaching the 30s limit
-            total_elapsed = time.time() - overall_start
-            if total_elapsed > 22.0:
-                _log.error(
-                    "[Router] 🛑 Hard timeout budget exceeded (%.2fs). Stopping cascades.",
-                    total_elapsed,
-                )
-                return None
+    try:
+        for tier_idx, tier_models in enumerate(tiers):
+            tier_timeout = _TIMEOUT_BY_TIER.get(tier_idx, 7)
 
-            total_attempts += 1
-            attempt_start = time.time()
-
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.15,          # Low temperature for grounded output
-                    max_tokens=max_tokens,
-                    timeout=timeout,
-                )
-                elapsed = time.time() - attempt_start
-                raw = (response.choices[0].message.content or "").strip()
-
-                if not raw:
-                    _log.warning(
-                        "[Router] Model '%s' (tier %d) empty response in %.2fs. Trying next.",
-                        model, tier_idx + 1, elapsed,
+            for model in tier_models:
+                # Global budget check — fires between model attempts
+                total_elapsed = time.time() - overall_start
+                if total_elapsed > _GLOBAL_BUDGET_S:
+                    _log.error(
+                        "[Router] 🛑 Global budget exceeded (%.2fs / %.0fs). Stopping.",
+                        total_elapsed, _GLOBAL_BUDGET_S,
                     )
-                    continue
+                    return None
 
-                # If JSON validation required, check before accepting
-                if validate_json:
-                    is_valid, parsed, reason = _validate_json_response(raw)
-                    if not is_valid:
+                total_attempts += 1
+                attempt_start = time.time()
+
+                try:
+                    # Submit the blocking SDK call to a thread
+                    future = _executor.submit(
+                        client.chat.completions.create,
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.15,
+                        max_tokens=max_tokens,
+                        timeout=tier_timeout,  # socket-level hint (belt)
+                    )
+                    # Wait with a TRUE wall-clock deadline (suspenders)
+                    response = future.result(timeout=tier_timeout)
+                    elapsed = time.time() - attempt_start
+                    raw = (response.choices[0].message.content or "").strip()
+
+                    if not raw:
                         _log.warning(
-                            "[Router] Model '%s' JSON validation failed: %s. Trying next.",
-                            model, reason,
+                            "[Router] Model '%s' (tier %d) empty response in %.2fs. Trying next.",
+                            model, tier_idx + 1, elapsed,
                         )
                         continue
 
-                    if require_recs and parsed:
-                        rec_valid, rec_reason = _validate_recommendation_response(
-                            parsed, require_recs=require_recs
-                        )
-                        if not rec_valid:
+                    # If JSON validation required, check before accepting
+                    if validate_json:
+                        is_valid, parsed, reason = _validate_json_response(raw)
+                        if not is_valid:
                             _log.warning(
-                                "[Router] Model '%s' rec validation failed: %s. Trying next.",
-                                model, rec_reason,
+                                "[Router] Model '%s' JSON validation failed: %s. Trying next.",
+                                model, reason,
                             )
                             continue
 
-                total_elapsed = time.time() - overall_start
-                _log.info(
-                    "[Router] ✓ Model '%s' (tier %d) success in %.2fs | attempts=%d | total=%.2fs",
-                    model, tier_idx + 1, elapsed, total_attempts, total_elapsed,
-                )
-                return raw
+                        if require_recs and parsed:
+                            rec_valid, rec_reason = _validate_recommendation_response(
+                                parsed, require_recs=require_recs
+                            )
+                            if not rec_valid:
+                                _log.warning(
+                                    "[Router] Model '%s' rec validation failed: %s. Trying next.",
+                                    model, rec_reason,
+                                )
+                                continue
 
-            except Exception as exc:
-                elapsed = time.time() - attempt_start
-                err = str(exc)
+                    total_elapsed = time.time() - overall_start
+                    _log.info(
+                        "[Router] ✓ Model '%s' (tier %d) success in %.2fs | attempts=%d | total=%.2fs",
+                        model, tier_idx + 1, elapsed, total_attempts, total_elapsed,
+                    )
+                    return raw
 
-                if _is_retriable_error(err):
+                except concurrent.futures.TimeoutError:
+                    elapsed = time.time() - attempt_start
                     _log.warning(
-                        "[Router] Model '%s' (tier %d) retriable error in %.2fs: %.80s. Trying next.",
-                        model, tier_idx + 1, elapsed, err,
+                        "[Router] Model '%s' (tier %d) HARD TIMEOUT after %.2fs. Trying next.",
+                        model, tier_idx + 1, elapsed,
                     )
-                else:
-                    _log.error(
-                        "[Router] Model '%s' (tier %d) non-retriable error in %.2fs: %.120s. Trying next.",
-                        model, tier_idx + 1, elapsed, err,
-                    )
+
+                except Exception as exc:
+                    elapsed = time.time() - attempt_start
+                    err = str(exc)
+                    if _is_retriable_error(err):
+                        _log.warning(
+                            "[Router] Model '%s' (tier %d) retriable error in %.2fs: %.80s. Trying next.",
+                            model, tier_idx + 1, elapsed, err,
+                        )
+                    else:
+                        _log.error(
+                            "[Router] Model '%s' (tier %d) non-retriable error in %.2fs: %.120s. Trying next.",
+                            model, tier_idx + 1, elapsed, err,
+                        )
+    finally:
+        _executor.shutdown(wait=False)
 
     total_elapsed = time.time() - overall_start
     _log.error(

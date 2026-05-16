@@ -150,7 +150,7 @@ def _extract_state_via_llm(
     history_str = _format_history_for_prompt(messages)
     prompt = STATE_EXTRACTION_PROMPT.format(conversation_history=history_str)
 
-    raw = call_llm_fast(prompt, timeout=8, max_tokens=512)
+    raw = call_llm_fast(prompt, timeout=4, max_tokens=256)
     if not raw:
         return None
 
@@ -1019,13 +1019,11 @@ def process_chat(request: ChatRequest) -> ChatResponse:
 
     # 3. Refinement check — MUST come before clarification gating.
     #    If the user has mid-conversation history and says "add X" or "remove Y",
-    #    route directly to refine even if state.seniority is missing.
+    #    route directly to refine. Regex-only state is sufficient — it already
+    #    scans ALL messages (user + assistant) for role/skills.
+    #    NEVER call _extract_state_via_llm here — that was causing 70s+ delays.
     if detect_refinement_intent(user_message) and has_assistant_history:
-        _log.info("Fast path: Refinement (has assistant history)")
-        # Escalate to LLM state extraction so refine handler has full context
-        llm_state = _extract_state_via_llm(messages)
-        if llm_state:
-            state = reconstruct_state_from_history(messages, llm_state=llm_state)
+        _log.info("Fast path: Refinement (role=%s, skills=%s)", state.role, state.technical_skills)
         return _handle_refine(user_message, state, messages, previous_recs)
 
     # 4. Clarification / Vague check
