@@ -541,6 +541,19 @@ def _handle_refine(
     if not prev_items:
         _log.info("No previous shortlist found. Applying refinement as fresh recommendation with existing state.")
 
+        # Parse category-level additions from the message
+        msg_lower = user_message.lower()
+        if "personality" in msg_lower:
+            state.needs_personality = True
+        if "teamwork" in msg_lower or "team" in msg_lower:
+            state.needs_personality = True  # teamwork measured via personality
+        if "cognitive" in msg_lower or "reasoning" in msg_lower:
+            state.needs_cognitive = True
+        if "leadership" in msg_lower:
+            state.needs_leadership = True
+        if "sjt" in msg_lower or "situational" in msg_lower:
+            state.needs_sjt = True
+
         # Try to apply refinement intent (e.g., "add AWS") by generating
         # a fresh shortlist using the existing conversation state
         intent = detect_refinement_intent(user_message)
@@ -554,8 +567,11 @@ def _handle_refine(
                 if target not in (state.excluded_names or []):
                     state.excluded_names.append(target)
 
+        # Build retrieval query from ROLE CONTEXT, not the refinement text
+        from agent.recommendation_engine import build_retrieval_query
+        role_query = build_retrieval_query(state, "")
         items = assemble_recommendations(
-            user_message=user_message,
+            user_message=role_query,
             state=state,
             previous_recommendations=None,
             max_results=10,

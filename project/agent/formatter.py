@@ -146,16 +146,20 @@ def build_chat_response(
         if actual_count > 0:
             import re as _re
             # Match patterns like "Here are 5 assessments" or "Here is 1 assessment"
+            # NOTE: must match 'assessments?' (with optional s) to avoid leaving
+            # a trailing 's' that creates 'assessmentss'
+            assessment_word = "assessment" if actual_count == 1 else "assessments"
+            here_verb = "Here is" if actual_count == 1 else "Here are"
             reply = _re.sub(
-                r"\b(here (?:are|is)) (\d+) (assessment)",
-                lambda m: f"{'Here is' if actual_count == 1 else 'Here are'} {actual_count} {'assessment' if actual_count == 1 else 'assessments'}",
+                r"\b(?:here (?:are|is)) \d+ assessments?\b",
+                f"{here_verb} {actual_count} {assessment_word}",
                 reply,
                 flags=_re.IGNORECASE,
             )
             # Also fix "X assessment(s)" standalone count patterns
             reply = _re.sub(
-                r"\b(\d+) (assessment)s?\b",
-                lambda m: f"{actual_count} {'assessment' if actual_count == 1 else 'assessments'}",
+                r"\b\d+ assessments?\b",
+                f"{actual_count} {assessment_word}",
                 reply,
                 flags=_re.IGNORECASE,
             )

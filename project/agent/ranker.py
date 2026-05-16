@@ -111,6 +111,19 @@ _LEGACY_PRODUCT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Domain-irrelevance patterns — demote items from unrelated job families
+# when the active role is tech/software/engineering
+_IRRELEVANT_DOMAIN_FOR_TECH_RE = re.compile(
+    r"\b(sales|selling|customer service|call cent|contact cent"
+    r"|retail|merchandis|cashier|store|shop"
+    r"|manufactur|industrial|mechanical|plant operator"
+    r"|warehouse|logistics|forklift|driver"
+    r"|nursing|nurse|healthcare aide|carer"
+    r"|clerical|filing|receptionist"
+    r"|food service|hospitality|housekeep)\b",
+    re.IGNORECASE,
+)
+
 # Seniority level keywords in product names (for mismatch detection)
 _ENTRY_LEVEL_NAME_RE = re.compile(
     r"\b(entry.?level|entry level|beginner|fundamental|basics?)\b",
@@ -305,6 +318,23 @@ def rank_candidates(
         if _GENERIC_NAME_RE.search(name) and not is_development:
             score *= 0.05
             _log.debug("Generic penalty applied to '%s'", name)
+
+        # --- Domain-irrelevance penalty ---
+        # When the role is in a specific domain (e.g., software engineering),
+        # heavily penalise items from unrelated domains (sales, customer service,
+        # manufacturing, etc.) to prevent refinement drift.
+        if state.role:
+            role_lower = (state.role or "").lower()
+            is_tech_role = any(kw in role_lower for kw in (
+                "software", "engineer", "developer", "programmer", "coder",
+                "data", "backend", "frontend", "fullstack", "devops", "sre",
+                "architect", "tech", "it ", "computing",
+            ))
+            if is_tech_role:
+                item_text = f"{name} {item.get('description', '')}"
+                if _IRRELEVANT_DOMAIN_FOR_TECH_RE.search(item_text):
+                    score *= 0.02
+                    _log.debug("Domain-irrelevance penalty for '%s' (tech role)", name)
 
         # --- Category-based noise penalty for tech queries ---
         if has_tech_skills:
