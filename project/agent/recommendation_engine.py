@@ -225,6 +225,11 @@ def assemble_recommendations(
     if state.technical_skills:
         shortlist = _prune_weak_tech_matches(shortlist, state.technical_skills, state)
 
+    # Post-rank pruning: HARD domain-irrelevance filter for tech roles.
+    # This is the deepest safety net — even if the ranker somehow let
+    # through a zero-scored item via battery balancing, it gets removed here.
+    shortlist = _post_rank_domain_filter(shortlist, state)
+
     _log.info(
         "Assembled %d recommendations for query: %.60s",
         len(shortlist),
@@ -514,6 +519,67 @@ def _prune_weak_tech_matches(
             _log.info("Tech pruning dropped: '%s' (no skill overlap)", name)
 
     return pruned
+
+
+# Domain-irrelevance regex — same patterns used across ranker and chat_logic
+_DOMAIN_IRRELEVANT_RE = re.compile(
+    r"\b(sales(?!force)|selling|sales.?transformation"
+    r"|customer service|call cent|contact cent"
+    r"|phone solution|phone simulation"
+    r"|retail|merchandis|cashier|store|shop"
+    r"|manufac|indust(?!ry)(?!rial engineering)"
+    r"|mechanical.?(?:focus|vigilance)"
+    r"|plant operator"
+    r"|safety.?(?:and|&)?.?dependab|dependab.?(?:and|&)?.?safety"
+    r"|workplace.?(?:health|safety)|safety focus"
+    r"|warehouse|logistics|forklift|driver"
+    r"|nursing|nurse|healthcare aide|carer"
+    r"|clerical|filing|receptionist"
+    r"|food service|hospitality|housekeep"
+    r"|entry.?level.?customer|entry.?level.?sales"
+    r"|entry.?level.?cashier|entry.?level.?hotel)\b",
+    re.IGNORECASE,
+)
+
+_TECH_ROLE_KW = (
+    "software", "engineer", "developer", "programmer", "coder",
+    "data", "backend", "frontend", "fullstack", "devops", "sre",
+    "architect", "tech", "it ", "computing", "cloud",
+)
+
+
+def _post_rank_domain_filter(
+    shortlist: List[Dict[str, Any]],
+    state: ConversationState,
+) -> List[Dict[str, Any]]:
+    """
+    Hard domain-irrelevance filter applied AFTER ranking.
+
+    For tech/software roles, removes any item whose name matches unrelated
+    domain patterns (sales, manufacturing, safety, customer service, etc.).
+
+    This is the deepest safety net — catches items that survived the ranker's
+    zero-score (e.g., injected via explicit inclusion or battery balancing).
+    """
+    # Detect tech context from role OR technical_skills
+    is_tech = False
+    if state.role:
+        role_lower = state.role.lower()
+        is_tech = any(kw in role_lower for kw in _TECH_ROLE_KW)
+    if not is_tech and state.technical_skills:
+        is_tech = True
+    if not is_tech:
+        return shortlist
+
+    filtered = []
+    for item in shortlist:
+        name = item.get("name", "")
+        if _DOMAIN_IRRELEVANT_RE.search(name):
+            _log.info("Post-rank domain filter REMOVED: '%s'", name)
+            continue
+        filtered.append(item)
+
+    return filtered if filtered else shortlist
 
 
 # ---------------------------------------------------------------------------

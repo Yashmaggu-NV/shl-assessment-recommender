@@ -868,24 +868,51 @@ def _resolve_llm_recommendations(
 
 
 # Domain-irrelevance regex for tech roles — matches items from unrelated
-# job families that should never appear when the original role is in
+# job families that should NEVER appear when the original role is in
 # software / engineering / data / IT.
 _IRRELEVANT_DOMAIN_RE = re.compile(
-    r"\b(sales|selling|customer service|call cent|contact cent"
+    r"\b(sales(?!force)|selling|sales.?transformation"
+    r"|customer service|call cent|contact cent"
+    r"|phone solution|phone simulation"
     r"|retail|merchandis|cashier|store|shop"
-    r"|manufactur|industrial|mechanical|plant operator"
+    r"|manufac|indust(?!ry)(?!rial engineering)"
+    r"|mechanical.?(?:focus|vigilance)"
+    r"|plant operator"
+    r"|safety.?(?:and|&)?.?dependab|dependab.?(?:and|&)?.?safety"
+    r"|workplace.?(?:health|safety)|safety focus"
     r"|warehouse|logistics|forklift|driver"
     r"|nursing|nurse|healthcare aide|carer"
     r"|clerical|filing|receptionist"
-    r"|food service|hospitality|housekeep)\b",
+    r"|food service|hospitality|housekeep"
+    r"|entry.?level.?customer|entry.?level.?sales"
+    r"|entry.?level.?cashier|entry.?level.?hotel)\b",
     re.IGNORECASE,
 )
 
 _TECH_ROLE_KEYWORDS = (
     "software", "engineer", "developer", "programmer", "coder",
     "data", "backend", "frontend", "fullstack", "devops", "sre",
-    "architect", "tech", "it ", "computing",
+    "architect", "tech", "it ", "computing", "cloud",
 )
+
+
+def _is_tech_context(state: ConversationState) -> bool:
+    """
+    Determine if the current conversation is about a tech/software role.
+    Checks multiple signals so the filter works even if LLM state extraction fails.
+    """
+    # Check state.role
+    if state.role:
+        role_lower = state.role.lower()
+        if any(kw in role_lower for kw in _TECH_ROLE_KEYWORDS):
+            return True
+
+    # Check technical_skills — if ANY programming language/tool is mentioned,
+    # this is a tech conversation
+    if state.technical_skills:
+        return True
+
+    return False
 
 
 def _filter_domain_irrelevant(
@@ -893,38 +920,36 @@ def _filter_domain_irrelevant(
     state: ConversationState,
 ) -> List[Dict[str, Any]]:
     """
-    Post-resolution domain-irrelevance filter.
+    Post-resolution domain-irrelevance HARD filter.
 
-    When the conversation role is a tech/software role, remove items whose
-    name or description belong to unrelated domains (sales, customer service,
-    manufacturing, etc.).  This is the safety net that catches domain drift
-    that the LLM or retriever may introduce, especially during refinement
-    turns where the user asks to "add personality/teamwork assessments".
+    When the conversation is about a tech/software role, REMOVE items whose
+    name belongs to unrelated domains (sales, customer service, manufacturing,
+    safety/dependability, phone solutions, etc.).
 
-    Items whose *only* purpose is domain-neutral (e.g., OPQ32r, Verify G+,
-    Business Communication) are explicitly kept.
+    This is the critical safety net that prevents domain drift during
+    refinement turns where broad queries like "add personality assessments"
+    pull in items from every job family.
+
+    Domain-neutral items (OPQ32r, Verify G+, Business Communication) pass
+    through because their names don't match the irrelevant-domain regex.
     """
-    if not state.role:
-        return items
-
-    role_lower = (state.role or "").lower()
-    is_tech_role = any(kw in role_lower for kw in _TECH_ROLE_KEYWORDS)
-    if not is_tech_role:
+    if not _is_tech_context(state):
         return items
 
     filtered = []
     for item in items:
-        item_text = f"{item.get('name', '')} {item.get('description', '')}"
-        if _IRRELEVANT_DOMAIN_RE.search(item_text):
+        name = item.get("name", "")
+        # Check name ONLY (not description) to avoid false positives on
+        # generic descriptions that mention "customer" or "service" in passing
+        if _IRRELEVANT_DOMAIN_RE.search(name):
             _log.info(
-                "Domain-irrelevance filter removed '%s' (tech role: %s)",
-                item.get("name", ""), state.role,
+                "Domain filter REMOVED '%s' (tech context: role=%s, skills=%s)",
+                name, state.role, state.technical_skills[:3] if state.technical_skills else [],
             )
             continue
         filtered.append(item)
 
-    # Guard: never return an empty list if we had items (would lose the
-    # shortlist entirely). Fall back to original if everything got filtered.
+    # Guard: if everything was filtered, return original to avoid empty list
     return filtered if filtered else items
 
 

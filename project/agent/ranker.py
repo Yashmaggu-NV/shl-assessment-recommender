@@ -111,16 +111,24 @@ _LEGACY_PRODUCT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Domain-irrelevance patterns — demote items from unrelated job families
+# Domain-irrelevance patterns — HARD EXCLUDE items from unrelated job families
 # when the active role is tech/software/engineering
 _IRRELEVANT_DOMAIN_FOR_TECH_RE = re.compile(
-    r"\b(sales|selling|customer service|call cent|contact cent"
+    r"\b(sales(?!force)|selling|sales.?transformation"
+    r"|customer service|call cent|contact cent"
+    r"|phone solution|phone simulation"
     r"|retail|merchandis|cashier|store|shop"
-    r"|manufactur|industrial|mechanical|plant operator"
+    r"|manufac|indust(?!ry)(?!rial engineering)"
+    r"|mechanical.?(?:focus|vigilance)"
+    r"|plant operator"
+    r"|safety.?(?:and|&)?.?dependab|dependab.?(?:and|&)?.?safety"
+    r"|workplace.?(?:health|safety)|safety focus"
     r"|warehouse|logistics|forklift|driver"
     r"|nursing|nurse|healthcare aide|carer"
     r"|clerical|filing|receptionist"
-    r"|food service|hospitality|housekeep)\b",
+    r"|food service|hospitality|housekeep"
+    r"|entry.?level.?customer|entry.?level.?sales"
+    r"|entry.?level.?cashier|entry.?level.?hotel)\b",
     re.IGNORECASE,
 )
 
@@ -319,22 +327,24 @@ def rank_candidates(
             score *= 0.05
             _log.debug("Generic penalty applied to '%s'", name)
 
-        # --- Domain-irrelevance penalty ---
+        # --- Domain-irrelevance HARD EXCLUSION ---
         # When the role is in a specific domain (e.g., software engineering),
-        # heavily penalise items from unrelated domains (sales, customer service,
-        # manufacturing, etc.) to prevent refinement drift.
+        # ZERO-score items from unrelated domains (sales, customer service,
+        # manufacturing, safety, etc.) so they NEVER appear in top-k.
+        _is_tech = False
         if state.role:
             role_lower = (state.role or "").lower()
-            is_tech_role = any(kw in role_lower for kw in (
+            _is_tech = any(kw in role_lower for kw in (
                 "software", "engineer", "developer", "programmer", "coder",
                 "data", "backend", "frontend", "fullstack", "devops", "sre",
-                "architect", "tech", "it ", "computing",
+                "architect", "tech", "it ", "computing", "cloud",
             ))
-            if is_tech_role:
-                item_text = f"{name} {item.get('description', '')}"
-                if _IRRELEVANT_DOMAIN_FOR_TECH_RE.search(item_text):
-                    score *= 0.02
-                    _log.debug("Domain-irrelevance penalty for '%s' (tech role)", name)
+        if not _is_tech and has_tech_skills:
+            _is_tech = True
+        if _is_tech:
+            if _IRRELEVANT_DOMAIN_FOR_TECH_RE.search(name):
+                score = 0.0
+                _log.debug("Domain HARD EXCLUDE for '%s' (tech role)", name)
 
         # --- Category-based noise penalty for tech queries ---
         if has_tech_skills:
