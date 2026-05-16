@@ -630,13 +630,20 @@ _DOMAIN_IRRELEVANT_RE = re.compile(
     r"|mechanical.?(?:focus|vigilance)"
     r"|plant operator"
     r"|safety.?(?:and|&)?.?dependab|dependab.?(?:and|&)?.?safety"
-    r"|workplace.?(?:health|safety)|safety focus"
+    r"|workplace.?(?:health|safety|admin)|safety focus"
     r"|warehouse|logistics|forklift|driver"
     r"|nursing|nurse|healthcare aide|carer"
     r"|clerical|filing|receptionist"
     r"|food service|hospitality|housekeep"
     r"|entry.?level.?customer|entry.?level.?sales"
-    r"|entry.?level.?cashier|entry.?level.?hotel)\b",
+    r"|entry.?level.?cashier|entry.?level.?hotel"
+    r"|\bjob.?control.?lang|\bjcl\b"
+    r"|\bbiztalk\b"
+    r"|salesforce.?develop"
+    r"|multitask(?:ing)?.?abilit"
+    r"|software.?business.?anal"
+    r"|office.?admin|general.?admin(?:istration)?"
+    r"|switchboard|mail.?clerk|data.?entry.?clerk)\b",
     re.IGNORECASE,
 )
 

@@ -574,9 +574,15 @@ def _handle_refine(
                     _log.info("Inline role fallback extracted: '%s'", state.role)
                     break
 
-    # Use user_message as supplemental context (it may mention "personality",
-    # "teamwork" etc.) but state anchors the domain (role, technical_skills).
+    # role_query: used for LLM orchestration prompt (includes refinement context)
     role_query = build_retrieval_query(state, user_message)
+
+    # role_anchor_query: used for RETRIEVAL when no prior shortlist exists.
+    # Anchored to role+state flags ONLY — deliberately excludes the raw
+    # refinement message ("Add communication and strategic thinking...") so
+    # that semantic search does not drift into unrelated catalog families
+    # (e.g. Workplace Administration, BizTalk, Multitasking Ability).
+    role_anchor_query = build_retrieval_query(state, state.role or "")
 
     # If we have no previous items to refine, generate a fresh shortlist
     # from state context (which now includes the refinement additions).
@@ -588,7 +594,7 @@ def _handle_refine(
             state.role, state.needs_leadership, state.needs_personality,
         )
         items = assemble_recommendations(
-            user_message=role_query,
+            user_message=role_anchor_query,  # Role-anchored, not refinement text
             state=state,
             previous_recommendations=None,
             max_results=10,
@@ -876,13 +882,20 @@ _IRRELEVANT_DOMAIN_RE = re.compile(
     r"|mechanical.?(?:focus|vigilance)"
     r"|plant operator"
     r"|safety.?(?:and|&)?.?dependab|dependab.?(?:and|&)?.?safety"
-    r"|workplace.?(?:health|safety)|safety focus"
+    r"|workplace.?(?:health|safety|admin)|safety focus"
     r"|warehouse|logistics|forklift|driver"
     r"|nursing|nurse|healthcare aide|carer"
     r"|clerical|filing|receptionist"
     r"|food service|hospitality|housekeep"
     r"|entry.?level.?customer|entry.?level.?sales"
-    r"|entry.?level.?cashier|entry.?level.?hotel)\b",
+    r"|entry.?level.?cashier|entry.?level.?hotel"
+    r"|\bjob.?control.?lang|\bjcl\b"
+    r"|\bbiztalk\b"
+    r"|salesforce.?develop"
+    r"|multitask(?:ing)?.?abilit"
+    r"|software.?business.?anal"
+    r"|office.?admin|general.?admin(?:istration)?"
+    r"|switchboard|mail.?clerk|data.?entry.?clerk)\b",
     re.IGNORECASE,
 )
 
