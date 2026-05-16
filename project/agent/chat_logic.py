@@ -123,6 +123,63 @@ def _call_llm(prompt: str, timeout: int = _LLM_TIMEOUT) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# LLM role inference (fallback for descriptive queries)
+# ---------------------------------------------------------------------------
+
+_ROLE_INFERENCE_PROMPT = """You are an HR assessment expert. The user described a hiring need but did not use a standard job title. Infer the most likely role profile from their description.
+
+User message: "{user_message}"
+
+Return a JSON object with these fields (use null if you cannot infer):
+{{
+  "role": "inferred job title (e.g., 'executive leader', 'team manager', 'strategic planner')",
+  "seniority": "junior|mid|senior|lead|manager|director|executive",
+  "skills": ["list", "of", "key", "competencies"],
+  "needs_leadership": true/false,
+  "needs_personality": true/false,
+  "needs_cognitive": true/false
+}}
+
+Return ONLY valid JSON, no markdown fences, no explanation."""
+
+
+def _infer_role_from_context(user_message: str) -> Optional[Dict[str, Any]]:
+    """
+    Use the LLM to infer a role profile from a descriptive user message.
+
+    Called when catalog retrieval returns few/no results because the user
+    described responsibilities and skills instead of a standard job title.
+    Handles queries about leadership, communication, conflict management,
+    strategic thinking, team management, remote work, etc.
+
+    Returns parsed JSON dict or None on failure.
+    """
+    prompt = _ROLE_INFERENCE_PROMPT.format(user_message=user_message)
+    raw = _call_llm(prompt, timeout=10)
+    if not raw:
+        return None
+
+    # Strip markdown code fences if present
+    raw = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        # Try to extract JSON from mixed content
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+    _log.debug("Role inference JSON parse failed: %.100s", raw)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # State extraction via LLM
 # ---------------------------------------------------------------------------
 
@@ -209,15 +266,16 @@ def _needs_clarification(
     """
     Decide whether we need to ask a clarification question.
 
-    Returns True (clarify) if:
-    - Message is vague AND no role/context established yet
-    - First turn with insufficient context
+    Returns True (clarify) ONLY if:
+    - Message is truly vague (< 4 meaningful words and no context signals)
+    - No role, skills, responsibilities, or domain context can be inferred
 
     Returns False (proceed to recommend) if:
     - We have enough context (role + one more signal)
     - User provided a full job description
     - Already in mid-conversation with previous recs
     - User message has refinement intent (add/remove/replace)
+    - User mentions soft skills, responsibilities, or domain context
     """
     if has_previous_recs:
         return False
@@ -226,8 +284,9 @@ def _needs_clarification(
     if detect_refinement_intent(user_message):
         return False
 
-    # If message is long (e.g., full JD), likely enough context
-    if len(user_message.split()) > 30:
+    # If message is moderately long (8+ words), there's likely enough context
+    # for the LLM to infer a role. Previously this was 30, which was too strict.
+    if len(user_message.split()) > 8:
         return False
 
     # Definitely vague
@@ -248,16 +307,37 @@ def _needs_clarification(
     if has_role and has_extra:
         return False
 
-    # Have role but no extra context → may need clarification
-    # However, for specific-enough roles (e.g., "Java developer"), proceed
-    specific_enough = re.search(
+    # Check for rich context signals: roles, soft skills, responsibilities,
+    # domain terms. If ANY of these are present, proceed to recommend and
+    # let the LLM infer the role profile.
+    rich_context = re.search(
+        # Explicit roles / job titles
         r"(java|python|sql|excel|contact.?cent|sales|customer service|"
         r"safety|chemical|graduate|engineer|developer|analyst|manager|"
-        r"nurse|teacher|accountant|financial|leadership|executive)",
+        r"nurse|teacher|accountant|financial|leadership|executive|"
+        r"founder|director|coordinator|supervisor|administrator|consultant|"
+        r"architect|specialist|officer|recruiter|trainer|advisor|"
+        # Soft skills & competencies
+        r"leadership|communication|conflict|negotiation|decision.?making|"
+        r"problem.?solv|critical.?think|strategic|emotional.?intellig|"
+        r"team.?manage|team.?build|collaboration|influence|coaching|"
+        r"mentoring|delegation|motivation|interpersonal|presentation|"
+        r"facilitat|stakeholder|change.?manage|project.?manage|"
+        # Responsibilities / actions
+        r"manag|lead|hire|recruit|assess|evaluat|screen|develop|"
+        r"oversee|supervis|coordinat|plan|strateg|budget|report|"
+        r"mentor|coach|train|onboard|"
+        # Domain / industry context
+        r"startup|enterprise|remote|hybrid|agile|scrum|digital|"
+        r"healthcare|banking|retail|manufacturing|logistics|pharma|"
+        r"technology|fintech|edtech|consulting|government|"
+        # Assessment-related terms
+        r"personality|cognitive|psychometric|aptitude|competenc|"
+        r"behavioral|situational|360|simulation)",
         user_message,
         re.IGNORECASE,
     )
-    if specific_enough:
+    if rich_context:
         return False
 
     return True
@@ -360,6 +440,44 @@ def _handle_recommend(
         purpose=state.purpose,
         top_k=40,
     )
+
+    # If catalog retrieval returned few/no results and we have a descriptive
+    # message, use LLM to infer role profile and retry retrieval
+    if len(candidates) < 3 and len(user_message.split()) > 5:
+        _log.info("Weak catalog match (%d candidates). Attempting LLM role inference.", len(candidates))
+        inferred = _infer_role_from_context(user_message)
+        if inferred:
+            _log.info("LLM inferred role context: %s", inferred)
+            # Update state with inferred fields
+            if inferred.get("role") and not state.role:
+                state.role = inferred["role"]
+            if inferred.get("seniority") and not state.seniority:
+                state.seniority = inferred["seniority"]
+            if inferred.get("skills"):
+                for skill in inferred["skills"]:
+                    if skill not in state.technical_skills:
+                        state.technical_skills.append(skill)
+            if inferred.get("needs_leadership"):
+                state.needs_leadership = True
+            if inferred.get("needs_personality"):
+                state.needs_personality = True
+            if inferred.get("needs_cognitive"):
+                state.needs_cognitive = True
+
+            # Retry retrieval with enriched state
+            query = build_retrieval_query(state, user_message)
+            candidates = hybrid_retrieve(
+                query=query,
+                state_context=state.to_context_string(),
+                job_levels=None,
+                languages=state.languages or None,
+                exclude_categories=state.excluded_categories or None,
+                exclude_names=state.excluded_names or None,
+                technical_skills=state.technical_skills or None,
+                purpose=state.purpose,
+                top_k=40,
+            )
+
     catalog_ctx = _build_catalog_context(candidates, max_items=25)
     history_str = _format_history_for_prompt(messages)
 

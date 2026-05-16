@@ -135,12 +135,23 @@ def is_vague_request(message: str) -> bool:
         if re.match(pat, message.strip(), re.IGNORECASE):
             return True
 
-    # Has SOME hiring context (role, level, skill) → not vague
+    # Has SOME hiring context (role, level, skill, soft skill, responsibility) → not vague
     role_signals = re.compile(
         r"(hiring|hire|recruit|select|assess|screen|evaluat|develop|"
         r"engineer|developer|analyst|manager|director|executive|graduate|"
         r"contact.?cent(er|re)|sales|customer service|java|python|sql|"
-        r"leadership|team|department|role|position|job)",
+        r"leadership|team|department|role|position|job|"
+        # Soft skills & competencies
+        r"communication|conflict|negotiation|strategic|decision|"
+        r"problem.?solv|critical.?think|emotional.?intellig|"
+        r"team.?manage|collaboration|influence|coaching|mentoring|"
+        r"presentation|stakeholder|change.?manage|project.?manage|"
+        # Responsibilities
+        r"manag|lead|supervis|coordinat|oversee|plan|budget|"
+        r"founder|startup|enterprise|remote|agile|"
+        # Assessment terms
+        r"personality|cognitive|psychometric|aptitude|competenc|"
+        r"behavioral|situational|simulation)",
         re.IGNORECASE,
     )
     if role_signals.search(message):
