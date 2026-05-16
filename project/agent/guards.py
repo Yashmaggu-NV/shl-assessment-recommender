@@ -44,6 +44,7 @@ PASS = RefusalDecision(should_refuse=False, reason="pass", response="")
 # Prompt injection patterns — case-insensitive
 _INJECTION_PATTERNS = [
     r"ignore (all )?(previous|prior|above|earlier) (instructions?|prompt|context|rules?)",
+    r"ignore shl",
     r"disregard (all )?(previous|prior|above|earlier)",
     r"you are now",
     r"act as (a |an )?(different|new|another|unrestricted)",
@@ -118,9 +119,11 @@ _OFFTOPIC_RE = [re.compile(p, re.IGNORECASE) for p in _OFFTOPIC_PATTERNS]
 # External tool / non-SHL product recommendation requests
 _EXTERNAL_TOOL_PATTERNS = [
     r"\b(codility|hackerrank|leetcode|testgorilla|indeed assessments?|linkedin assessments?)\b",
-    r"\brecommend (a |an )?(different|alternative|other|third.?party) (tool|platform|vendor|assessment)\b",
+    r"\b(coursera|udemy|skillshare|pluralsight|edx|udacity|brilliant)\b",
+    r"\brecommend (a |an )?(different|alternative|other|third.?party|non.?shl) (tool|platform|vendor|assessment|course|product)\b",
     r"\bwhat (other|alternative) (assessment|tool|platform) (vendor|provider)s?\b",
     r"\bcompare shl (with|to|vs\.?) (korn ferry|hogan|criteria|wonderlic)\b",
+    r"\b(?:ignore|skip|forget|don't use|stop using) shl\b",
 ]
 
 _EXTERNAL_TOOL_RE = [re.compile(p, re.IGNORECASE) for p in _EXTERNAL_TOOL_PATTERNS]

@@ -68,7 +68,7 @@ _log = get_logger(__name__)
 
 _llm_client = None
 _LLM_MODEL_NAME = "deepseek/deepseek-v4-flash:free"
-_LLM_TIMEOUT = 25  # seconds — stay inside 30s evaluator timeout
+_LLM_TIMEOUT = 15  # seconds — keep total well under 30s evaluator timeout
 
 
 def _get_llm_client():
@@ -166,7 +166,7 @@ def _infer_role_from_context(user_message: str) -> Optional[Dict[str, Any]]:
     Returns parsed JSON dict or None on failure.
     """
     prompt = _ROLE_INFERENCE_PROMPT.format(user_message=user_message)
-    raw = _call_llm(prompt, timeout=10)
+    raw = _call_llm(prompt, timeout=6)
     if not raw:
         return None
 
@@ -204,7 +204,7 @@ def _extract_state_via_llm(
     history_str = _format_history_for_prompt(messages)
     prompt = STATE_EXTRACTION_PROMPT.format(conversation_history=history_str)
 
-    raw = _call_llm(prompt, timeout=10)
+    raw = _call_llm(prompt, timeout=6)
     if not raw:
         return None
 
@@ -524,6 +524,7 @@ def _handle_recommend(
         previous_recommendations=None,
         max_results=10,
     )
+    items = _filter_domain_irrelevant(items, state)
     reply = _build_recommendation_reply(state, items)
     return build_chat_response(reply=reply, items=items, end_of_conversation=False)
 

@@ -87,6 +87,10 @@ def _build_skill_focused_query(state: ConversationState, user_message: str) -> s
 
     This ensures keyword overlap with catalog items named
     "Core Java (Advanced Level) (New)", "Amazon Web Services (AWS)", etc.
+
+    Also appends personality/cognitive/leadership/communication terms
+    when those flags are explicitly set on state (e.g., after a
+    refinement turn "add personality and teamwork assessments").
     """
     parts = []
 
@@ -105,6 +109,20 @@ def _build_skill_focused_query(state: ConversationState, user_message: str) -> s
         if clean and len(clean) > 2 and clean not in covered:
             covered.add(clean)
             parts.append(clean)
+
+    # Append category-specific terms when explicitly requested.
+    # Without these, the retriever would never surface personality or
+    # cognitive assessments for a tech role.
+    if state.needs_personality is True:
+        parts.append("personality behaviour teamwork OPQ")
+    if state.needs_cognitive is True:
+        parts.append("cognitive ability reasoning verify")
+    if state.needs_leadership is True:
+        parts.append("leadership executive")
+    if state.needs_sjt is True:
+        parts.append("situational judgment")
+    if state.needs_simulation is True:
+        parts.append("simulation")
 
     # Add "assessment test" to help semantic search
     parts.append("assessment test")
@@ -504,13 +522,13 @@ def _prune_weak_tech_matches(
 
 _REMOVE_INTENT_RE = re.compile(
     r"(?:remove|drop|exclude|skip|no\s+more|without|don't|do\s+not)\s+"
-    r"(?:the\s+|any\s+)?(.+?)(?:\s+test|\s+assessment|\s+from|\s+please|\s*$)",
+    r"(?:the\s+|any\s+)?(.+?)(?:\s+tests?|\s+assessments?|\s+from|\s+please|\s*$)",
     re.IGNORECASE,
 )
 
 _ADD_INTENT_RE = re.compile(
-    r"(?:add|include|also\s+add|also\s+include|i\s+want|we\s+want|plus)\s+"
-    r"(?:a\s+|an\s+|the\s+)?(.+?)(?:\s+test|\s+assessment|\s+too|\s*$)",
+    r"(?:add|include|also\s+add|also\s+include|i\s+(?:also\s+)?want|we\s+(?:also\s+)?want|plus|along\s+with)\s+"
+    r"(?:a\s+|an\s+|the\s+|some\s+)?(.+?)(?:\s+tests?|\s+assessments?|\s+too|\s+as\s+well|\s*$)",
     re.IGNORECASE,
 )
 

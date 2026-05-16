@@ -47,6 +47,9 @@ _INJECTION_SIGNALS = re.compile(
 _EXTERNAL_PRODUCT_SIGNALS = re.compile(
     r"(codility|hackerrank|testgorilla|indeed assessment|linkedin assessment|"
     r"korn ferry|hogan assess|wonderlic|arctic shores|pymetrics|hirevue|"
+    r"coursera|udemy|skillshare|pluralsight|edx|udacity|brilliant|"
+    r"ignore shl|skip shl|don't use shl|stop using shl|"
+    r"recommend.+?non.?shl|recommend.+?coursera|"
     r"vs\.?\s+(?:korn ferry|hogan|criteria))",
     re.IGNORECASE,
 )

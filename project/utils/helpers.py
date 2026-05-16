@@ -114,6 +114,23 @@ CATEGORY_ALIASES: Dict[str, str] = {
     "development": "D",
     "360": "D",
     "360 feedback": "D",
+    # soft-skill aliases (map to closest SHL category)
+    "teamwork": "P",
+    "teamwork assessment": "P",
+    "teamwork assessments": "P",
+    "team": "P",
+    "leadership": "P",
+    "leadership assessment": "P",
+    "leadership assessments": "P",
+    "communication": "K",
+    "communication assessment": "K",
+    "communication skills": "K",
+    "problem solving": "A",
+    "problem-solving": "A",
+    "conflict management": "P",
+    "strategic thinking": "A",
+    "interpersonal": "P",
+    "emotional intelligence": "P",
 }
 
 
