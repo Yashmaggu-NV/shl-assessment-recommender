@@ -20,7 +20,7 @@ robust fallback regex extractor for common patterns.
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from utils.helpers import (
     CATEGORY_ALIASES,
@@ -60,6 +60,32 @@ class ConversationState:
     technical_skills: List[str] = field(default_factory=list)
 
     conversation_complete: bool = False
+
+    # Canonical keywords for tech-role detection — ClassVar so dataclass ignores it
+    _TECH_ROLE_KW: ClassVar[Tuple[str, ...]] = (
+        "software", "engineer", "developer", "programmer", "coder",
+        "backend", "frontend", "fullstack", "devops", "sre", "architect",
+        "data scientist", "data engineer", "cloud", "ai engineer",
+        "ml engineer", "machine learning", "tech lead", "computing",
+    )
+
+    def is_tech_domain(self) -> bool:
+        """
+        Single authoritative check: is this a technical/software role?
+
+        Returns True if:
+        - state.role contains any tech keyword, OR
+        - state.technical_skills is non-empty (any specific tech skill mentioned)
+
+        Used by query builder, retriever, ranker, and domain filter to ensure
+        consistent domain classification across all pipeline stages.
+        """
+        if self.technical_skills:
+            return True
+        if self.role:
+            role_lower = self.role.lower()
+            return any(kw in role_lower for kw in self._TECH_ROLE_KW)
+        return False
 
     def to_context_string(self) -> str:
         """Render state as a readable string for injection into LLM prompts."""

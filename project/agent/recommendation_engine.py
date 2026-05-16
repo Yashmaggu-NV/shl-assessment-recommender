@@ -46,13 +46,24 @@ def build_retrieval_query(state: ConversationState, user_message: str) -> str:
 
     For technical roles with skills, produces a skill-focused query to maximize
     keyword overlap with technical assessment names in the catalog.
+
+    For general tech roles (no specific skills), injects domain keywords to
+    prevent semantic drift into unrelated domains (sales, manufacturing, etc.).
     """
     # If we have technical skills, build a focused skill query
     if state.technical_skills:
         return _build_skill_focused_query(state, user_message)
 
+    # Detect tech role from role string even without specific skill mentions
+    role_lower = (state.role or "").lower()
+    _is_tech_role = any(kw in role_lower for kw in (
+        "software", "engineer", "developer", "programmer", "coder",
+        "backend", "frontend", "fullstack", "devops", "sre", "architect",
+        "data", "cloud", "ai ", "ml ", "tech", "computing",
+    ))
+
     # Generic query construction
-    parts = [user_message]
+    parts = [user_message] if user_message else []
 
     if state.role:
         parts.append(state.role)
@@ -60,20 +71,39 @@ def build_retrieval_query(state: ConversationState, user_message: str) -> str:
         parts.append(state.seniority)
     if state.industry:
         parts.append(state.industry)
+
+    # For tech roles without specific skills, inject software domain anchors
+    # to prevent semantic drift into sales/customer-service/manufacturing
+    if _is_tech_role:
+        parts.extend(["software", "programming", "engineering", "technical"])
+
     if state.safety_critical:
         parts.extend(["safety", "dependability", "reliability"])
-    if state.needs_personality:
-        parts.append("personality behaviour")
-    if state.needs_cognitive:
-        parts.append("cognitive ability reasoning")
-    if state.needs_sjt:
+    if state.needs_personality is True:
+        parts.append("personality behaviour teamwork OPQ")
+    if state.needs_cognitive is True:
+        parts.append("cognitive ability reasoning verify")
+    if state.needs_sjt is True:
         parts.append("situational judgment")
-    if state.needs_simulation:
+    if state.needs_simulation is True:
         parts.append("simulation")
-    if state.needs_leadership:
-        parts.append("leadership executive")
+    if state.needs_leadership is True:
+        parts.extend(["leadership executive OPQ personality reasoning"])
     if state.purpose == "development":
         parts.append("development 360")
+
+    # Append included_categories as human-readable terms
+    for code in (state.included_categories or []):
+        if code == "P":
+            parts.append("personality behaviour")
+        elif code == "A":
+            parts.append("cognitive reasoning ability")
+        elif code == "K":
+            parts.append("knowledge skills")
+        elif code == "B":
+            parts.append("situational judgment")
+        elif code == "S":
+            parts.append("simulation")
 
     return " ".join(parts)
 
@@ -630,14 +660,7 @@ def _post_rank_domain_filter(
     This is the deepest safety net — catches items that survived the ranker's
     zero-score (e.g., injected via explicit inclusion or battery balancing).
     """
-    # Detect tech context from role OR technical_skills
-    is_tech = False
-    if state.role:
-        role_lower = state.role.lower()
-        is_tech = any(kw in role_lower for kw in _TECH_ROLE_KW)
-    if not is_tech and state.technical_skills:
-        is_tech = True
-    if not is_tech:
+    if not state.is_tech_domain():
         return shortlist
 
     filtered = []

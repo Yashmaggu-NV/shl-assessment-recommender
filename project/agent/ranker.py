@@ -333,19 +333,9 @@ def rank_candidates(
             _log.debug("Generic penalty applied to '%s'", name)
 
         # --- Domain-irrelevance HARD EXCLUSION ---
-        # When the role is in a specific domain (e.g., software engineering),
-        # ZERO-score items from unrelated domains (sales, customer service,
-        # manufacturing, safety, etc.) so they NEVER appear in top-k.
-        _is_tech = False
-        if state.role:
-            role_lower = (state.role or "").lower()
-            _is_tech = any(kw in role_lower for kw in (
-                "software", "engineer", "developer", "programmer", "coder",
-                "data", "backend", "frontend", "fullstack", "devops", "sre",
-                "architect", "tech", "it ", "computing", "cloud",
-            ))
-        if not _is_tech and has_tech_skills:
-            _is_tech = True
+        # Use state.is_tech_domain() as the single source of truth so all
+        # pipeline stages agree on domain classification.
+        _is_tech = state.is_tech_domain()
         if _is_tech:
             if _IRRELEVANT_DOMAIN_FOR_TECH_RE.search(name):
                 score = 0.0

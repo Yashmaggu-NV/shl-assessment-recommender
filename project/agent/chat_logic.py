@@ -599,7 +599,9 @@ def _handle_refine(
 
     # --- 3. Build retrieval query from ROLE CONTEXT, not refinement text --
     from agent.recommendation_engine import build_retrieval_query
-    role_query = build_retrieval_query(state, "")  # Use state only
+    # Use user_message as supplemental context (it may mention "personality",
+    # "teamwork" etc.) but state anchors the domain (role, technical_skills).
+    role_query = build_retrieval_query(state, user_message)
 
     # If we have no previous items to refine, generate a fresh shortlist
     # using the existing state context (which now includes the refinement)
@@ -612,7 +614,6 @@ def _handle_refine(
             max_results=10,
         )
         if items:
-            # Apply domain-irrelevance filtering for tech roles
             items = _filter_domain_irrelevant(items, state)
             reply = _build_recommendation_reply(state, items)
             return build_chat_response(reply=reply, items=items, end_of_conversation=False)
@@ -631,6 +632,8 @@ def _handle_refine(
         exclude_categories=state.excluded_categories or None,
         exclude_names=state.excluded_names or None,
         purpose=state.purpose,
+        needs_personality=state.needs_personality,
+        needs_leadership=state.needs_leadership,
         top_k=30,
     )
     catalog_ctx = _build_catalog_context(new_candidates + prev_items, max_items=30)
@@ -899,20 +902,10 @@ _TECH_ROLE_KEYWORDS = (
 def _is_tech_context(state: ConversationState) -> bool:
     """
     Determine if the current conversation is about a tech/software role.
-    Checks multiple signals so the filter works even if LLM state extraction fails.
+    Delegates to state.is_tech_domain() as the single source of truth.
     """
-    # Check state.role
-    if state.role:
-        role_lower = state.role.lower()
-        if any(kw in role_lower for kw in _TECH_ROLE_KEYWORDS):
-            return True
+    return state.is_tech_domain()
 
-    # Check technical_skills — if ANY programming language/tool is mentioned,
-    # this is a tech conversation
-    if state.technical_skills:
-        return True
-
-    return False
 
 
 def _filter_domain_irrelevant(
