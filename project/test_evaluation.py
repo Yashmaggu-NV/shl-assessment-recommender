@@ -505,6 +505,50 @@ def test_17_router_tier_fallback():
     return resp
 
 
+def test_18_fast_path_vague():
+    """Verify extremely vague queries trigger fast path without LLM."""
+    print("\n" + "=" * 60)
+    print("TEST 18: Fast-path vague query")
+    print("=" * 60)
+    import time
+    start = time.time()
+    resp = run_chat([{
+        "role": "user",
+        "content": "I need an assessment"
+    }])
+    elapsed = time.time() - start
+    validate_schema(resp, "fast_path_vague")
+    print(f"  Reply: {resp.reply}")
+    print(f"  Elapsed: {elapsed:.2f}s")
+    if elapsed < 1.0:
+        print("  ✓ PASS: Handled instantly via fast path (<1s)")
+    else:
+        print("  ✗ FAIL: Too slow, LLM was likely called")
+    return resp
+
+
+def test_19_fast_path_clarification():
+    """Verify 'Hiring a software engineer' correctly fast-paths to clarification."""
+    print("\n" + "=" * 60)
+    print("TEST 19: Fast-path clarification (missing seniority)")
+    print("=" * 60)
+    import time
+    start = time.time()
+    resp = run_chat([{
+        "role": "user",
+        "content": "Hiring a software engineer"
+    }])
+    elapsed = time.time() - start
+    validate_schema(resp, "fast_path_clarify")
+    print(f"  Reply: {resp.reply}")
+    print(f"  Elapsed: {elapsed:.2f}s")
+    if elapsed < 1.0:
+        print("  ✓ PASS: Handled instantly via fast path (<1s)")
+    else:
+        print("  ✗ FAIL: Too slow, LLM was likely called")
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Run all
 # ---------------------------------------------------------------------------
@@ -531,6 +575,8 @@ if __name__ == "__main__":
     test_15_router_turn_types()
     test_16_router_json_validation()
     test_17_router_tier_fallback()
+    test_18_fast_path_vague()
+    test_19_fast_path_clarification()
 
     print("\n" + "=" * 60)
     print("All tests completed.")

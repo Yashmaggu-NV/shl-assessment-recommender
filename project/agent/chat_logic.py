@@ -345,29 +345,12 @@ def _handle_clarification(
     state: ConversationState,
     messages: List[Dict[str, str]],
 ) -> ChatResponse:
-    """Ask a targeted clarification question."""
-    # Build a small candidate pool to inform the clarification
-    from agent.recommendation_engine import build_retrieval_query
-    query = build_retrieval_query(state, user_message)
-    candidates = hybrid_retrieve(query=query, top_k=15)
-    catalog_ctx = _build_catalog_context(candidates)
-
-    history_str = _format_history_for_prompt(messages)
-    prompt = ORCHESTRATION_PROMPT.format(
-        catalog_context=catalog_ctx,
-        state_context=state.to_context_string(),
-        conversation_history=history_str,
-    )
-
-    raw = _call_llm(prompt)
-    reply = _parse_llm_reply(raw)
-
-    if reply:
-        return build_chat_response(reply=reply, is_clarification=True)
-
-    # Fallback: deterministic clarification question
-    fallback = _deterministic_clarification(state, user_message)
-    return build_chat_response(reply=fallback, is_clarification=True)
+    """
+    Ask a targeted clarification question.
+    Optimized for latency: skips all LLM and retrieval steps.
+    """
+    reply = _deterministic_clarification(state, user_message)
+    return build_chat_response(reply=reply, is_clarification=True)
 
 
 def _deterministic_clarification(
@@ -990,34 +973,63 @@ def process_chat(request: ChatRequest) -> ChatResponse:
         _log.info("Guard fired: %s", guard.reason)
         return build_chat_response(reply=guard.response, is_refusal=True)
 
-    # Reconstruct conversation state
-    llm_state = _extract_state_via_llm(messages)
-    state = reconstruct_state_from_history(messages, llm_state=llm_state)
+    # Reconstruct conversation state (fast, regex-only pass first)
+    state = reconstruct_state_from_history(messages, llm_state=None)
 
-    # Extract previous recommendations from assistant messages
+    # Extract previous history
     previous_recs = extract_previous_recommendations(messages[:-1])  # exclude current user msg
     has_previous_recs = bool(previous_recs)
-
-    # Check if there are any assistant messages in history
-    # (refinement detection needs this even if URL parsing failed)
     has_assistant_history = any(m["role"] == "assistant" for m in messages[:-1])
 
-    # Classify the current turn
+    # -----------------------------------------------------------------------
+    # FAST-PATH DECISION TREE
+    # Avoid LLM state extraction if the turn can be handled deterministically
+    # -----------------------------------------------------------------------
+    
+    # 1. Refusal check
+    refusal_reason = classify_refusal(user_message)
+    if refusal_reason:
+        _log.info("Fast path triggered: Refusal (%s)", refusal_reason)
+        return _handle_refuse(user_message)
+
+    # 2. Comparison check
+    if is_comparison_request(user_message) and extract_comparison_names(user_message):
+        _log.info("Fast path triggered: Comparison")
+        return _handle_compare(user_message, state, messages, previous_recs)
+
+    # 3. Clarification / Vague check
+    # If the regex-only state is still vague (e.g. "Hiring a software engineer"
+    # lacks seniority), we skip the LLM and ask for clarification immediately.
+    if _needs_clarification(user_message, state, has_previous_recs):
+        _log.info("Fast path triggered: Clarification")
+        return _handle_clarification(user_message, state, messages)
+
+    # -----------------------------------------------------------------------
+    # SLOW PATH: Requires accurate state for recommendation/refinement
+    # -----------------------------------------------------------------------
+    _log.info("Fast path skipped. Escalating to LLM state extraction.")
+    llm_state = _extract_state_via_llm(messages)
+    if llm_state:
+        # Merge LLM findings into our existing state object
+        state = reconstruct_state_from_history(messages, llm_state=llm_state)
+
+    # Re-classify the turn now that we have full LLM state
     turn_type = _classify_turn(user_message, state, has_previous_recs, has_assistant_history)
     _log.info("Turn classified as: %s (has_recs=%s, has_asst=%s)", turn_type, has_previous_recs, has_assistant_history)
 
     # Route to handler
     try:
-        if turn_type == "refuse":
-            response = _handle_refuse(user_message)
-        elif turn_type == "compare":
-            response = _handle_compare(user_message, state, messages, previous_recs)
-        elif turn_type == "close":
+        if turn_type == "close":
             response = _handle_close(user_message, state, previous_recs)
         elif turn_type == "refine":
             response = _handle_refine(user_message, state, messages, previous_recs)
+        elif turn_type == "refuse":
+            # Just in case classification caught something the fast path missed
+            response = _handle_refuse(user_message)
         elif turn_type == "clarify":
             response = _handle_clarification(user_message, state, messages)
+        elif turn_type == "compare":
+            response = _handle_compare(user_message, state, messages, previous_recs)
         else:  # "recommend"
             response = _handle_recommend(user_message, state, messages, previous_recs)
 

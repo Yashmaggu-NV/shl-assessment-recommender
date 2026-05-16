@@ -257,6 +257,15 @@ def route_llm_call(
         timeout = _TIMEOUT_BY_TIER.get(tier_idx, 15)
 
         for model in tier_models:
+            # Timing protection: Stop if we are approaching the 30s limit
+            total_elapsed = time.time() - overall_start
+            if total_elapsed > 22.0:
+                _log.error(
+                    "[Router] 🛑 Hard timeout budget exceeded (%.2fs). Stopping cascades.",
+                    total_elapsed,
+                )
+                return None
+
             total_attempts += 1
             attempt_start = time.time()
 
